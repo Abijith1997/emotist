@@ -6,6 +6,7 @@ interface SidebarProps {
   onSelectPage: (id: string) => void;
   mobileMenuOpen: boolean;
   closeMobileMenu: () => void;
+  width?: number;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -13,9 +14,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectPage,
   mobileMenuOpen,
   closeMobileMenu,
+  width,
 }) => {
   return (
-    <aside className={`sidebar ${mobileMenuOpen ? 'mobile-open' : ''}`}>
+    <aside 
+      className={`sidebar ${mobileMenuOpen ? 'mobile-open' : ''}`}
+      style={{ width }}
+    >
       <nav aria-label="Documentation navigation">
         {Object.entries(docsConfig).map(([key, category]) => (
           <div key={key} className="sidebar-category">

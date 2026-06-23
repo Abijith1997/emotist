@@ -1,5 +1,6 @@
 import React from 'react';
-import { Sun, Moon, Menu, X, Search, BookOpen, MessageSquare, Cloud, Network } from 'lucide-react';
+import { Sun, Moon, Menu, X, Search, BookOpen, MessageSquare, Cloud, Network, LogOut, CheckSquare } from 'lucide-react';
+import { supabase } from '../supabaseClient';
 
 interface HeaderProps {
   theme: 'light' | 'dark';
@@ -7,8 +8,10 @@ interface HeaderProps {
   mobileMenuOpen: boolean;
   setMobileMenuOpen: (open: boolean) => void;
   onOpenSearch: () => void;
-  activeTab: 'docs' | 'forum' | 'cloud' | 'architecture';
-  setActiveTab: (tab: 'docs' | 'forum' | 'cloud' | 'architecture') => void;
+  activeTab: 'docs' | 'forum' | 'cloud' | 'architecture' | 'tasks';
+  setActiveTab: (tab: 'docs' | 'forum' | 'cloud' | 'architecture' | 'tasks') => void;
+  session: any;
+  onOpenProfile: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -19,6 +22,8 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenSearch,
   activeTab,
   setActiveTab,
+  session,
+  onOpenProfile,
 }) => {
   return (
     <header className="header">
@@ -64,6 +69,12 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <Network size={15} /> Architecture
         </button>
+        <button
+          className={`nav-tab-link ${activeTab === 'tasks' ? 'active' : ''}`}
+          onClick={() => setActiveTab('tasks')}
+        >
+          <CheckSquare size={15} /> Tasks
+        </button>
       </nav>
 
       <div className="header-right">
@@ -108,7 +119,40 @@ export const Header: React.FC<HeaderProps> = ({
         >
           {theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}
         </button>
+
+        {/* User Profile Trigger Button */}
+        <button
+          className="header-profile-btn"
+          onClick={onOpenProfile}
+          aria-label="Edit Profile"
+          title="Edit Profile"
+        >
+          {session?.user?.user_metadata?.avatar_url ? (
+            <img
+              src={session.user.user_metadata.avatar_url}
+              alt="User profile avatar"
+              className="header-avatar-img"
+            />
+          ) : (
+            <div className="header-avatar-placeholder">
+              {session?.user?.user_metadata?.username
+                ? session.user.user_metadata.username.charAt(0).toUpperCase()
+                : session?.user?.email?.charAt(0).toUpperCase() || 'U'}
+            </div>
+          )}
+        </button>
+
+        {/* Sign out button */}
+        <button
+          className="icon-btn"
+          onClick={() => supabase.auth.signOut()}
+          aria-label="Sign Out"
+          title="Sign Out"
+        >
+          <LogOut size={20} />
+        </button>
       </div>
+
     </header>
   );
 };

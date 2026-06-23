@@ -8,9 +8,10 @@ interface HeaderItem {
 
 interface TableOfContentsProps {
   content: string;
+  width?: number;
 }
 
-export const TableOfContents: React.FC<TableOfContentsProps> = ({ content }) => {
+export const TableOfContents: React.FC<TableOfContentsProps> = ({ content, width }) => {
   const [headers, setHeaders] = useState<HeaderItem[]>([]);
   const [activeId, setActiveId] = useState<string>('');
 
@@ -93,7 +94,7 @@ export const TableOfContents: React.FC<TableOfContentsProps> = ({ content }) => 
 
   if (headers.length === 0) {
     return (
-      <aside className="toc-sidebar" aria-label="Table of contents empty">
+      <aside className="toc-sidebar" style={{ width }} aria-label="Table of contents empty">
         <h2 className="toc-title">On This Page</h2>
         <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>No headers found.</p>
       </aside>
@@ -101,7 +102,7 @@ export const TableOfContents: React.FC<TableOfContentsProps> = ({ content }) => 
   }
 
   return (
-    <aside className="toc-sidebar" aria-label="Table of contents">
+    <aside className="toc-sidebar" style={{ width }} aria-label="Table of contents">
       <h2 className="toc-title">On This Page</h2>
       <ul className="toc-links">
         {headers.map((header) => (
