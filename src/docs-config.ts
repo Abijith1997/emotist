@@ -20,7 +20,7 @@ export interface DocsConfig {
   [categoryKey: string]: DocCategory;
 }
 
-export const docsConfig: DocsConfig = {
+export const staticDocsConfig: DocsConfig = {
   'overview': {
     title: 'Overview & Getting Started',
     pages: [
@@ -50,7 +50,7 @@ export const docsConfig: DocsConfig = {
 };
 
 // Flattened pages helper for easy routing & search
-export const allPages: DocPage[] = Object.values(docsConfig).reduce<DocPage[]>(
+export const staticAllPages: DocPage[] = Object.values(staticDocsConfig).reduce<DocPage[]>(
   (acc, category) => [...acc, ...category.pages],
   []
 );

@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Search, X, FileText } from 'lucide-react';
-import { allPages, type DocPage } from '../docs-config';
+import { type DocPage } from '../docs-config';
 
 interface SearchModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSelectPage: (id: string) => void;
+  allPages: DocPage[];
 }
 
 interface SearchResult {
@@ -13,7 +14,7 @@ interface SearchResult {
   snippet: string;
 }
 
-export const SearchModal: React.FC<SearchModalProps> = ({ isOpen, onClose, onSelectPage }) => {
+export const SearchModal: React.FC<SearchModalProps> = ({ isOpen, onClose, onSelectPage, allPages }) => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);

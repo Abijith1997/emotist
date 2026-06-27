@@ -99,9 +99,10 @@ const getColorForString = (str: string): string => {
 
 interface ForumProps {
   session?: any;
+  activeOrg: any | null;
 }
 
-export const Forum: React.FC<ForumProps> = ({ session }) => {
+export const Forum: React.FC<ForumProps> = ({ session, activeOrg }) => {
   const [threads, setThreads] = useState<Thread[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -255,10 +256,11 @@ export const Forum: React.FC<ForumProps> = ({ session }) => {
 
   // Fetch threads and comments from Supabase
   const fetchThreads = async () => {
+    if (!activeOrg) return;
     try {
       setLoading(true);
       // Attempt to fetch with image_url column
-      let response = await supabase
+      let response: any = await supabase
         .from('forum_threads')
         .select(`
           id,
@@ -276,7 +278,8 @@ export const Forum: React.FC<ForumProps> = ({ session }) => {
             image_url,
             created_at
           )
-        `);
+        `)
+        .eq('organization_id', activeOrg.id);
 
       // If error is 42703 (column does not exist), fall back to fetching without image_url
       if (response.error && (response.error.code === '42703' || response.error.message.includes('image_url'))) {
@@ -297,7 +300,8 @@ export const Forum: React.FC<ForumProps> = ({ session }) => {
               content,
               created_at
             )
-          `);
+          `)
+          .eq('organization_id', activeOrg.id);
       }
 
       if (response.error) throw response.error;
@@ -353,8 +357,10 @@ export const Forum: React.FC<ForumProps> = ({ session }) => {
   };
 
   useEffect(() => {
-    fetchThreads();
-  }, []);
+    if (activeOrg) {
+      fetchThreads();
+    }
+  }, [activeOrg?.id]);
 
   // Filter threads
   const filteredThreads = activeCategory === 'All'
@@ -472,7 +478,8 @@ export const Forum: React.FC<ForumProps> = ({ session }) => {
       author: authorName,
       category: newCategory,
       upvotes: 1,
-      image_url: uploadedUrl
+      image_url: uploadedUrl,
+      organization_id: activeOrg.id
     };
 
     try {
@@ -588,7 +595,8 @@ export const Forum: React.FC<ForumProps> = ({ session }) => {
           const { error } = await supabase
             .from('forum_threads')
             .update({ category: fallbackCat })
-            .eq('category', catToRemove);
+            .eq('category', catToRemove)
+            .eq('organization_id', activeOrg.id);
 
           if (error) throw error;
 

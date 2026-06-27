@@ -1,5 +1,8 @@
-import React from 'react';
-import { Sun, Moon, Menu, X, Search, BookOpen, MessageSquare, Cloud, Network, LogOut, CheckSquare } from 'lucide-react';
+import React, { useState } from 'react';
+import { 
+  Sun, Moon, Menu, X, Search, BookOpen, MessageSquare, 
+  Cloud, Network, LogOut, CheckSquare, ChevronDown, Plus, Edit, Mail, Building 
+} from 'lucide-react';
 import { supabase } from '../supabaseClient';
 
 interface HeaderProps {
@@ -12,6 +15,13 @@ interface HeaderProps {
   setActiveTab: (tab: 'docs' | 'forum' | 'cloud' | 'architecture' | 'tasks') => void;
   session: any;
   onOpenProfile: () => void;
+  organizations: any[];
+  activeOrg: any | null;
+  onOpenCreateOrg: () => void;
+  onOpenRenameOrg: () => void;
+  onOpenWorkspaceMembers: () => void;
+  onSwitchOrg: (org: any | null) => void;
+  onOpenConfigTabs: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -24,7 +34,15 @@ export const Header: React.FC<HeaderProps> = ({
   setActiveTab,
   session,
   onOpenProfile,
+  organizations,
+  activeOrg,
+  onOpenCreateOrg,
+  onOpenRenameOrg,
+  onOpenWorkspaceMembers,
+  onSwitchOrg,
+  onOpenConfigTabs,
 }) => {
+  const [isOrgDropdownOpen, setIsOrgDropdownOpen] = useState(false);
   return (
     <header className="header">
       <div className="header-left">
@@ -39,9 +57,94 @@ export const Header: React.FC<HeaderProps> = ({
         <div className="logo-container">
           <BookOpen size={20} strokeWidth={2.5} />
         </div>
-        <span className="site-title" style={{ cursor: 'pointer' }} onClick={() => setActiveTab('docs')}>
-          Emotist Docs
-        </span>
+        <div className="org-selector-container">
+          <button 
+            type="button"
+            className="org-selector-btn" 
+            onClick={() => setIsOrgDropdownOpen(!isOrgDropdownOpen)}
+            aria-label="Organization actions"
+          >
+            <span className="site-title-brand" onClick={(e) => {
+              e.stopPropagation();
+              setActiveTab('docs');
+            }}>Docify</span>
+            <span className="site-title-separator">/</span>
+            <span className="org-name-display">{activeOrg ? activeOrg.name : 'Loading...'}</span>
+            <ChevronDown size={14} className="org-chevron" style={{ transform: isOrgDropdownOpen ? 'rotate(180deg)' : 'none', display: 'inline-block' }} />
+          </button>
+          
+          {isOrgDropdownOpen && (
+            <div className="org-dropdown-menu">
+              <div className="org-dropdown-header">Switch Organization</div>
+              <div className="org-dropdown-list">
+                {organizations.map((org) => (
+                  <button 
+                    type="button"
+                    key={org.id} 
+                    onClick={() => {
+                      onSwitchOrg(org);
+                      setIsOrgDropdownOpen(false);
+                    }} 
+                    className={`org-dropdown-item ${activeOrg?.id === org.id ? 'active' : ''}`}
+                  >
+                    {org.name}
+                  </button>
+                ))}
+              </div>
+              <div className="org-dropdown-divider" />
+              <button 
+                type="button"
+                onClick={() => {
+                  setIsOrgDropdownOpen(false);
+                  onOpenCreateOrg();
+                }} 
+                className="org-dropdown-action-btn"
+              >
+                <Plus size={14} /> Create Organization
+              </button>
+              <button 
+                type="button"
+                onClick={() => {
+                  setIsOrgDropdownOpen(false);
+                  onOpenRenameOrg();
+                }} 
+                className="org-dropdown-action-btn"
+              >
+                <Edit size={14} /> Edit Organization Name
+              </button>
+              <button 
+                type="button"
+                onClick={() => {
+                  setIsOrgDropdownOpen(false);
+                  onOpenWorkspaceMembers();
+                }} 
+                className="org-dropdown-action-btn"
+              >
+                <Mail size={14} /> Workspace Members
+              </button>
+              <button 
+                type="button"
+                onClick={() => {
+                  setIsOrgDropdownOpen(false);
+                  onSwitchOrg(null);
+                }} 
+                className="org-dropdown-action-btn"
+              >
+                <Building size={14} /> Switch Workspace
+              </button>
+              <button 
+                type="button"
+                onClick={() => {
+                  setIsOrgDropdownOpen(false);
+                  onOpenConfigTabs();
+                }} 
+                className="org-dropdown-action-btn"
+              >
+                <Network size={14} /> Configure Workspace Tabs
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       <nav className="header-nav">
@@ -57,24 +160,30 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <MessageSquare size={15} /> Forum
         </button>
-        <button
-          className={`nav-tab-link ${activeTab === 'cloud' ? 'active' : ''}`}
-          onClick={() => setActiveTab('cloud')}
-        >
-          <Cloud size={15} /> Cloud Deployment
-        </button>
-        <button
-          className={`nav-tab-link ${activeTab === 'architecture' ? 'active' : ''}`}
-          onClick={() => setActiveTab('architecture')}
-        >
-          <Network size={15} /> Architecture
-        </button>
-        <button
-          className={`nav-tab-link ${activeTab === 'tasks' ? 'active' : ''}`}
-          onClick={() => setActiveTab('tasks')}
-        >
-          <CheckSquare size={15} /> Tasks
-        </button>
+        {activeOrg?.settings?.enabled_tabs?.includes('cloud') !== false && (
+          <button
+            className={`nav-tab-link ${activeTab === 'cloud' ? 'active' : ''}`}
+            onClick={() => setActiveTab('cloud')}
+          >
+            <Cloud size={15} /> Cloud Deployment
+          </button>
+        )}
+        {activeOrg?.settings?.enabled_tabs?.includes('architecture') !== false && (
+          <button
+            className={`nav-tab-link ${activeTab === 'architecture' ? 'active' : ''}`}
+            onClick={() => setActiveTab('architecture')}
+          >
+            <Network size={15} /> Architecture
+          </button>
+        )}
+        {activeOrg?.settings?.enabled_tabs?.includes('tasks') !== false && (
+          <button
+            className={`nav-tab-link ${activeTab === 'tasks' ? 'active' : ''}`}
+            onClick={() => setActiveTab('tasks')}
+          >
+            <CheckSquare size={15} /> Tasks
+          </button>
+        )}
       </nav>
 
       <div className="header-right">

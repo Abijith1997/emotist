@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { DocContent } from './components/DocContent';
@@ -7,10 +7,11 @@ import { SearchModal } from './components/SearchModal';
 import { Forum } from './components/Forum';
 import { CloudDeployment } from './components/CloudDeployment';
 import { ArchitectureExplorer } from './components/ArchitectureExplorer';
-import { allPages } from './docs-config';
+import { staticDocsConfig, staticAllPages } from './docs-config';
 import { supabase } from './supabaseClient';
 import { Login } from './components/Login';
-import { Loader, Camera } from 'lucide-react';
+import { OrgSelectorPage } from './components/OrgSelectorPage';
+import { Loader, Camera, AlertCircle, Database, X, BookOpen, Plus } from 'lucide-react';
 import { Tasks } from './components/Tasks';
 
 type Tab = 'docs' | 'forum' | 'cloud' | 'architecture' | 'tasks';
@@ -18,6 +19,714 @@ type Tab = 'docs' | 'forum' | 'cloud' | 'architecture' | 'tasks';
 function App() {
   const [session, setSession] = useState<any>(null);
   const [authLoading, setAuthLoading] = useState(true);
+
+  // Active page state (parsed from hash routing)
+  const [activePageId, setActivePageId] = useState<string>(() => {
+    const hash = window.location.hash.replace('#', '');
+    return hash || 'introduction';
+  });
+
+  // Dynamic documentation states
+  const [docCategories, setDocCategories] = useState<any[]>([]);
+  const [docPages, setDocPages] = useState<any[]>([]);
+  const [docsErrorMissingTable, setDocsErrorMissingTable] = useState(false);
+  const [docsSetupOpen, setDocsSetupOpen] = useState(false);
+
+  // Multi-tenant organization states
+  const [organizations, setOrganizations] = useState<any[]>([]);
+  const [activeOrg, setActiveOrg] = useState<any | null>(null);
+
+  // Seeding documentation helper
+  const seedDocumentation = async (orgId: string) => {
+    try {
+      console.log('Seeding documentation tables for org:', orgId);
+      
+      // 1. Insert categories
+      const categoriesToInsert = Object.entries(staticDocsConfig).map(([, cat], idx) => ({
+        title: cat.title,
+        sort_order: idx,
+        organization_id: orgId
+      }));
+      
+      const { data: insertedCats, error: catErr } = await supabase
+        .from('doc_categories')
+        .insert(categoriesToInsert)
+        .select();
+        
+      if (catErr) throw catErr;
+      
+      // Create mapping of category title to its inserted ID
+      const catMap = new Map(insertedCats.map(c => [c.title, c.id]));
+      
+      // 2. Insert pages
+      const pagesToInsert: any[] = [];
+      Object.entries(staticDocsConfig).forEach(([, cat]) => {
+        const catId = catMap.get(cat.title);
+        if (catId) {
+          cat.pages.forEach((page, idx) => {
+            pagesToInsert.push({
+              category_id: catId,
+              slug: page.id,
+              title: page.title,
+              content: page.content,
+              sort_order: idx
+            });
+          });
+        }
+      });
+      
+      const { error: pageErr } = await supabase
+        .from('doc_pages')
+        .insert(pagesToInsert);
+        
+      if (pageErr) throw pageErr;
+    } catch (err) {
+      console.error('Failed to seed default documentation database:', err);
+    }
+  };
+
+  // Helper to fetch categories and pages
+  const fetchDocumentation = async () => {
+    if (!activeOrg) return;
+    try {
+      setDocsErrorMissingTable(false);
+
+      const { data: cats, error: catsErr } = await supabase
+        .from('doc_categories')
+        .select('*')
+        .eq('organization_id', activeOrg.id)
+        .order('sort_order', { ascending: true });
+
+      if (catsErr) {
+        if (catsErr.code === '42P01') {
+          setDocsErrorMissingTable(true);
+          return;
+        }
+        throw catsErr;
+      }
+
+      if (!cats || cats.length === 0) {
+        setDocCategories([]);
+        setDocPages([]);
+        return;
+      }
+
+      const catIds = cats ? cats.map(c => c.id) : [];
+      let pages: any[] = [];
+      if (catIds.length > 0) {
+        const { data: pgData, error: pagesErr } = await supabase
+          .from('doc_pages')
+          .select('*')
+          .in('category_id', catIds)
+          .order('sort_order', { ascending: true });
+
+        if (pagesErr) throw pagesErr;
+        pages = pgData || [];
+      }
+
+      setDocCategories(cats || []);
+      setDocPages(pages);
+    } catch (err) {
+      console.error('Error fetching documentation:', err);
+    }
+  };
+
+  // Helper to fetch organizations for current user and migrate legacy NULL data
+  const fetchOrganizations = async (userId: string) => {
+    try {
+      // 1. Fetch user's organizations
+      const { data: memberData, error: memberErr } = await supabase
+        .from('organization_members')
+        .select('organization_id, organizations (id, name)')
+        .eq('user_id', userId);
+
+      if (memberErr) throw memberErr;
+
+      let orgsList = memberData
+        ? memberData.map((item: any) => item.organizations).filter(Boolean)
+        : [];
+
+      // 2. Ensure "Emotist" organization always exists and current user is member
+      let emotistOrg = orgsList.find((o: any) => o.name.toLowerCase() === 'emotist');
+
+      if (!emotistOrg) {
+        // Check if "Emotist" organization exists globally in the organizations table
+        const { data: existingOrgs } = await supabase
+          .from('organizations')
+          .select('*')
+          .eq('name', 'Emotist');
+
+        if (existingOrgs && existingOrgs.length > 0) {
+          emotistOrg = existingOrgs[0];
+        } else {
+          // Create "Emotist" organization
+          const { data: newOrg, error: newOrgErr } = await supabase
+            .from('organizations')
+            .insert([{ name: 'Emotist', created_by: userId }])
+            .select()
+            .single();
+
+          if (newOrgErr) throw newOrgErr;
+          emotistOrg = newOrg;
+        }
+
+        // Add user to Emotist organization membership
+        const { error: memErr } = await supabase
+          .from('organization_members')
+          .insert([{ organization_id: emotistOrg.id, user_id: userId, role: 'owner' }]);
+
+        if (memErr && memErr.code !== '23505') { // Ignore duplicate keys
+          throw memErr;
+        }
+
+        // Refetch member organizations
+        const { data: refetchedMembers } = await supabase
+          .from('organization_members')
+          .select('organization_id, organizations (id, name)')
+          .eq('user_id', userId);
+
+        orgsList = refetchedMembers
+          ? refetchedMembers.map((item: any) => item.organizations).filter(Boolean)
+          : [emotistOrg];
+      }
+
+      // 3. Migrate any legacy documentation categories, forum threads, and tasks with NULL organization_id to point to the Emotist organization
+      const { data: nullCats } = await supabase
+        .from('doc_categories')
+        .select('id')
+        .is('organization_id', null);
+
+      if (nullCats && nullCats.length > 0 && emotistOrg) {
+        console.log('Migrating legacy categories with NULL organization_id to Emotist...');
+        const { error: updateErr } = await supabase
+          .from('doc_categories')
+          .update({ organization_id: emotistOrg.id })
+          .is('organization_id', null);
+
+        if (updateErr) throw updateErr;
+      }
+
+      if (emotistOrg) {
+        // Migrate legacy forum threads
+        await supabase
+          .from('forum_threads')
+          .update({ organization_id: emotistOrg.id })
+          .is('organization_id', null);
+
+        // Migrate legacy tasks
+        await supabase
+          .from('tasks')
+          .update({ organization_id: emotistOrg.id })
+          .is('organization_id', null);
+      }
+
+      // 4. Ensure Emotist org has documentation seeded (if it has 0 categories)
+      if (emotistOrg) {
+        const { data: emotistCats } = await supabase
+          .from('doc_categories')
+          .select('id')
+          .eq('organization_id', emotistOrg.id);
+
+        if (!emotistCats || emotistCats.length === 0) {
+          console.log('Seeding default documentation to Emotist organization...');
+          await seedDocumentation(emotistOrg.id);
+        }
+      }
+
+      setOrganizations(orgsList);
+
+      if (orgsList.length > 0) {
+        const savedOrgId = localStorage.getItem(`active_org_${userId}`);
+        const currentOrg = orgsList.find((o: any) => o.id === savedOrgId) || emotistOrg || orgsList[0];
+        setActiveOrg(currentOrg);
+        localStorage.setItem(`active_org_${userId}`, currentOrg.id);
+      }
+    } catch (err) {
+      console.error('Error fetching organizations or migrating legacy data:', err);
+    }
+  };
+
+  const handleCreateOrganization = async (name: string) => {
+    if (!name || !name.trim()) return;
+    try {
+      const userId = session?.user?.id;
+      if (!userId) return;
+
+      const { data: orgData, error: orgErr } = await supabase
+        .from('organizations')
+        .insert([{ name: name.trim(), created_by: userId }])
+        .select()
+        .single();
+         
+      if (orgErr) throw orgErr;
+      
+      const { error: memErr } = await supabase
+        .from('organization_members')
+        .insert([{ organization_id: orgData.id, user_id: userId, role: 'owner' }]);
+         
+      if (memErr) throw memErr;
+      
+      setOrganizations(prev => [...prev, orgData]);
+      setActiveOrg(orgData);
+      localStorage.setItem(`active_org_${userId}`, orgData.id);
+      setIsCreateOrgOpen(false);
+      setCreateOrgName('');
+      showAlertDialog('Success', 'Organization created successfully!', 'success');
+    } catch (err: any) {
+      console.error('Failed to create organization:', err);
+      showAlertDialog('Error', 'Failed to create organization: ' + err.message, 'error');
+    }
+  };
+
+  const handleRenameOrganization = async (newName: string) => {
+    if (!activeOrg || !newName || !newName.trim()) return;
+    try {
+      const { error } = await supabase
+        .from('organizations')
+        .update({ name: newName.trim() })
+        .eq('id', activeOrg.id);
+
+      if (error) throw error;
+
+      const updatedOrg = { ...activeOrg, name: newName.trim() };
+      setOrganizations(prev => prev.map(o => o.id === activeOrg.id ? updatedOrg : o));
+      setActiveOrg(updatedOrg);
+      setIsRenameOrgOpen(false);
+      setRenameOrgName('');
+      showAlertDialog('Success', 'Organization renamed successfully!', 'success');
+    } catch (err: any) {
+      console.error('Failed to rename organization:', err);
+      showAlertDialog('Error', 'Failed to rename organization: ' + err.message, 'error');
+    }
+  };
+
+  const fetchMembersAndUsers = async () => {
+    if (!activeOrg) return;
+    setLoadingMembers(true);
+    try {
+      // 1. Fetch organization members
+      const { data: members, error: membersErr } = await supabase.rpc('get_organization_members', {
+        org_id: activeOrg.id
+      });
+      if (membersErr) throw membersErr;
+
+      // 2. Fetch all registered users
+      const { data: users, error: usersErr } = await supabase.rpc('get_registered_users');
+      if (usersErr) throw usersErr;
+
+      setMembersList(members || []);
+
+      // Filter out users who are already members of this organization
+      const memberEmails = new Set((members || []).map((m: any) => m.email.toLowerCase()));
+      const filtered = (users || []).filter((u: any) => !memberEmails.has(u.email.toLowerCase()));
+      setInviteableUsers(filtered);
+    } catch (err: any) {
+      console.error('Failed to fetch members or users:', err);
+      const msg = err.message || '';
+      if (msg.includes('get_organization_members') || msg.includes('get_registered_users')) {
+        showAlertDialog(
+          'Supabase SQL Setup Required',
+          `Please run the following SQL script in your Supabase Dashboard SQL Editor to support listing users and members:
+
+create or replace function public.get_registered_users()
+returns table (email text, id uuid, username text)
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+begin
+  if auth.role() <> 'authenticated' then
+    raise exception 'Not authenticated';
+  end if;
+  return query
+  select u.email::text, u.id, coalesce(u.raw_user_meta_data->>'username', '') as username
+  from auth.users u
+  order by u.email;
+end;
+$$;
+
+create or replace function public.get_organization_members(org_id uuid)
+returns table (user_id uuid, email text, username text, role text)
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+begin
+  if auth.role() <> 'authenticated' then
+    raise exception 'Not authenticated';
+  end if;
+  if not exists (
+    select 1 from public.organization_members
+    where organization_id = org_id and organization_members.user_id = auth.uid()
+  ) then
+    raise exception 'Access denied';
+  end if;
+  return query
+  select 
+    m.user_id,
+    u.email::text,
+    coalesce(u.raw_user_meta_data->>'username', '') as username,
+    m.role::text
+  from public.organization_members m
+  join auth.users u on m.user_id = u.id
+  where m.organization_id = org_id
+  order by u.email;
+end;
+$$;`,
+          'error'
+        );
+      } else {
+        showAlertDialog('Error', 'Failed to fetch workspace members: ' + msg, 'error');
+      }
+    } finally {
+      setLoadingMembers(false);
+    }
+  };
+
+  const handleInviteFromDropdown = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeOrg || !selectedInviteUser) return;
+    try {
+      const { data, error } = await supabase.rpc('invite_user_to_organization', {
+        email_address: selectedInviteUser,
+        org_id: activeOrg.id
+      });
+
+      if (error) throw error;
+
+      if (data && data.success) {
+        showAlertDialog(
+          'Member Added',
+          `${selectedInviteUser} has been successfully added to the organization!`,
+          'success'
+        );
+        setSelectedInviteUser('');
+        // Refresh members list
+        await fetchMembersAndUsers();
+      } else {
+        throw new Error(data?.error || 'Invitation failed');
+      }
+    } catch (err: any) {
+      console.error('Failed to add member:', err);
+      showAlertDialog('Error', 'Failed to add member: ' + err.message, 'error');
+    }
+  };
+
+  const handleSwitchOrganization = (org: any) => {
+    setActiveOrg(org);
+    if (session?.user?.id) {
+      localStorage.setItem(`active_org_${session.user.id}`, org.id ? org.id : '');
+    }
+  };
+
+  const handleUpdateTabs = async (enabledTabs: string[]) => {
+    if (!activeOrg) return;
+    try {
+      const updatedSettings = {
+        ...activeOrg.settings,
+        enabled_tabs: enabledTabs
+      };
+      
+      const { error } = await supabase
+        .from('organizations')
+        .update({ settings: updatedSettings })
+        .eq('id', activeOrg.id);
+
+      if (error) throw error;
+
+      const updatedOrg = { ...activeOrg, settings: updatedSettings };
+      setOrganizations(prev => prev.map(o => o.id === activeOrg.id ? updatedOrg : o));
+      setActiveOrg(updatedOrg);
+      
+      if (!enabledTabs.includes(activeTab)) {
+        setActiveTab('docs');
+      }
+      
+      setIsConfigTabsOpen(false);
+    } catch (err: any) {
+      console.error('Failed to update workspace tabs:', err);
+      showAlertDialog('Error', 'Failed to update workspace tabs: ' + err.message, 'error');
+    }
+  };
+
+  // Fetch organizations when user logs in
+  useEffect(() => {
+    if (session?.user?.id) {
+      fetchOrganizations(session.user.id);
+    } else {
+      setOrganizations([]);
+      setActiveOrg(null);
+    }
+  }, [session]);
+
+  // Fetch documentation when session or active organization changes
+  useEffect(() => {
+    if (session && activeOrg) {
+      fetchDocumentation();
+    }
+  }, [session, activeOrg]);
+
+  // Create Section (Category)
+  const handleAddCategory = () => {
+    if (!activeOrg) {
+      showAlertDialog('Error', 'Please select or create an organization first.', 'error');
+      return;
+    }
+    setNewSectionTitle('');
+    setIsCreateSectionOpen(true);
+  };
+
+  const submitAddCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeOrg) return;
+    if (!newSectionTitle || !newSectionTitle.trim()) return;
+
+    try {
+      const nextOrder = docCategories.length;
+      const { data, error } = await supabase
+        .from('doc_categories')
+        .insert([{ title: newSectionTitle.trim(), sort_order: nextOrder, organization_id: activeOrg.id }])
+        .select();
+
+      if (error) throw error;
+      if (data && data[0]) {
+        setDocCategories(prev => [...prev, data[0]]);
+        setIsCreateSectionOpen(false);
+        setNewSectionTitle('');
+      }
+    } catch (err: any) {
+      console.error('Failed to add category:', err);
+      showAlertDialog('Error', 'Failed to add section: ' + err.message, 'error');
+    }
+  };
+
+  // Rename Section (Category)
+  const handleRenameCategory = (catId: string, currentTitle: string) => {
+    setActiveRenameSectionId(catId);
+    setRenameSectionTitle(currentTitle);
+    setIsRenameSectionOpen(true);
+  };
+
+  const submitRenameCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeRenameSectionId || !renameSectionTitle || !renameSectionTitle.trim()) return;
+
+    try {
+      const { error } = await supabase
+        .from('doc_categories')
+        .update({ title: renameSectionTitle.trim() })
+        .eq('id', activeRenameSectionId);
+
+      if (error) throw error;
+      setDocCategories(prev => prev.map(c => c.id === activeRenameSectionId ? { ...c, title: renameSectionTitle.trim() } : c));
+      setIsRenameSectionOpen(false);
+      setActiveRenameSectionId(null);
+      setRenameSectionTitle('');
+    } catch (err: any) {
+      console.error('Failed to rename category:', err);
+      showAlertDialog('Error', 'Failed to rename section: ' + err.message, 'error');
+    }
+  };
+
+  // Delete Section (Category)
+  const handleDeleteCategory = async (catId: string) => {
+    const category = docCategories.find(c => c.id === catId);
+    const categoryTitle = category ? category.title : 'this section';
+    
+    // Check if category has pages
+    const hasPages = docPages.some(p => p.category_id === catId);
+    const confirmMsg = hasPages 
+      ? `Are you sure you want to delete "${categoryTitle}" and ALL of its pages? This action is permanent.`
+      : `Are you sure you want to delete "${categoryTitle}"?`;
+
+    setConfirmDialogConfig({
+      title: 'Delete Section',
+      message: confirmMsg,
+      onConfirm: async () => {
+        try {
+          const { error } = await supabase
+            .from('doc_categories')
+            .delete()
+            .eq('id', catId);
+
+          if (error) throw error;
+          
+          setDocCategories(prev => prev.filter(c => c.id !== catId));
+          setDocPages(prev => prev.filter(p => p.category_id !== catId));
+          
+          const deletedPageActive = docPages.some(p => p.category_id === catId && p.slug === activePageId);
+          if (deletedPageActive) {
+            handleSelectPage('introduction');
+          }
+        } catch (err: any) {
+          console.error('Failed to delete category:', err);
+          showAlertDialog('Error', 'Failed to delete section: ' + err.message, 'error');
+        }
+      }
+    });
+    setIsConfirmDialogOpen(true);
+  };
+
+  // Add Page to Section
+  const handleCreatePage = (catId: string) => {
+    setActiveNewPageCategoryId(catId);
+    setNewPageTitle('');
+    setNewPageSlug('');
+    setIsCreatePageOpen(true);
+  };
+
+  const submitCreatePage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeNewPageCategoryId || !newPageTitle.trim() || !newPageSlug.trim()) return;
+
+    const formattedSlug = newPageSlug.trim().toLowerCase()
+      .replace(/[^\w\s-]/g, '')
+      .replace(/\s+/g, '-');
+
+    // Check duplicate slug
+    const duplicate = docPages.some(p => p.slug === formattedSlug);
+    if (duplicate) {
+      showAlertDialog('Duplicate Identifier', `The URL identifier "${formattedSlug}" is already in use. Please enter a unique slug.`, 'error');
+      return;
+    }
+
+    try {
+      const nextOrder = docPages.filter(p => p.category_id === activeNewPageCategoryId).length;
+      const { data, error } = await supabase
+        .from('doc_pages')
+        .insert([{
+          category_id: activeNewPageCategoryId,
+          title: newPageTitle.trim(),
+          slug: formattedSlug,
+          content: `# ${newPageTitle.trim()}\n\nStart writing documentation here...`,
+          sort_order: nextOrder
+        }])
+        .select();
+
+      if (error) throw error;
+      if (data && data[0]) {
+        setDocPages(prev => [...prev, data[0]]);
+        setIsCreatePageOpen(false);
+        setNewPageTitle('');
+        setNewPageSlug('');
+        setActiveNewPageCategoryId(null);
+        handleSelectPage(data[0].slug);
+      }
+    } catch (err: any) {
+      console.error('Failed to create page:', err);
+      showAlertDialog('Error', 'Failed to create page: ' + err.message, 'error');
+    }
+  };
+
+  // Save Page changes
+  const handleSavePage = async (dbId: string, slug: string, title: string, content: string) => {
+    const formattedSlug = slug.trim().toLowerCase()
+      .replace(/[^\w\s-]/g, '')
+      .replace(/\s+/g, '-');
+
+    // Check duplicate slug (excluding the current page)
+    const duplicate = docPages.some(p => p.id !== dbId && p.slug === formattedSlug);
+    if (duplicate) {
+      showAlertDialog('Duplicate Identifier', `The URL identifier "${formattedSlug}" is already in use by another page. Please choose a unique slug.`, 'error');
+      throw new Error('Duplicate slug');
+    }
+
+    try {
+      const { error } = await supabase
+        .from('doc_pages')
+        .update({
+          slug: formattedSlug,
+          title: title.trim(),
+          content: content
+        })
+        .eq('id', dbId);
+
+      if (error) throw error;
+
+      setDocPages(prev => prev.map(p => p.id === dbId ? { ...p, slug: formattedSlug, title: title.trim(), content: content } : p));
+      
+      // Update hash routing selection if slug changed
+      if (activePageId !== formattedSlug) {
+        handleSelectPage(formattedSlug);
+      }
+    } catch (err) {
+      console.error('Failed to save page:', err);
+      throw err;
+    }
+  };
+
+  // Delete Page
+  const handleDeletePage = async (dbId: string) => {
+    const pageToDelete = docPages.find(p => p.id === dbId);
+    if (!pageToDelete) return;
+
+    setConfirmDialogConfig({
+      title: 'Delete Page',
+      message: `Are you sure you want to delete the page "${pageToDelete.title}"?`,
+      onConfirm: async () => {
+        try {
+          const { error } = await supabase
+            .from('doc_pages')
+            .delete()
+            .eq('id', dbId);
+
+          if (error) throw error;
+
+          setDocPages(prev => prev.filter(p => p.id !== dbId));
+          
+          // Navigate away from deleted page
+          if (activePageId === pageToDelete.slug) {
+            handleSelectPage('introduction');
+          }
+        } catch (err: any) {
+          console.error('Failed to delete page:', err);
+          showAlertDialog('Error', 'Failed to delete page: ' + err.message, 'error');
+        }
+      }
+    });
+    setIsConfirmDialogOpen(true);
+  };
+
+  // Structure documentation state based on DB or static fallback
+  const docsConfig = useMemo(() => {
+    if (docsErrorMissingTable) {
+      return staticDocsConfig;
+    }
+
+    const config: any = {};
+    docCategories.forEach((cat) => {
+      config[cat.id] = {
+        title: cat.title,
+        id: cat.id,
+        pages: docPages
+          .filter((p) => p.category_id === cat.id)
+          .map((p) => ({
+            id: p.slug,
+            dbId: p.id,
+            title: p.title,
+            content: p.content,
+            category_id: p.category_id
+          }))
+      };
+    });
+    return config;
+  }, [docCategories, docPages, docsErrorMissingTable]);
+
+  // Flattened pages helper for easy routing & search
+  const allPages = useMemo(() => {
+    if (docsErrorMissingTable) {
+      return staticAllPages;
+    }
+    return Object.values(docsConfig).reduce<any[]>(
+      (acc, category: any) => [...acc, ...category.pages],
+      []
+    );
+  }, [docsConfig, docsErrorMissingTable]);
+
+  // Active page computation
+  const activePage = useMemo(() => {
+    return allPages.find((p) => p.id === activePageId) || allPages[0] || null;
+  }, [allPages, activePageId]);
 
   // Theme state
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -66,26 +775,83 @@ function App() {
 
   // Profile editing states
   const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [isConfigTabsOpen, setIsConfigTabsOpen] = useState(false);
+  const [tempEnabledTabs, setTempEnabledTabs] = useState<string[]>([]);
   const [username, setUsername] = useState('');
   const [avatarUrl, setAvatarUrl] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [uploadingProfile, setUploadingProfile] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [profileSuccess, setProfileSuccess] = useState<string | null>(null);
 
+  // Force password reset (first login/recovery) states
+  const [isForcePasswordResetOpen, setIsForcePasswordResetOpen] = useState(false);
+  const [forceNewPassword, setForceNewPassword] = useState('');
+  const [forceConfirmPassword, setForceConfirmPassword] = useState('');
+  const [savingForceReset, setSavingForceReset] = useState(false);
+  const [forceResetError, setForceResetError] = useState<string | null>(null);
+  const [forceResetSuccess, setForceResetSuccess] = useState<string | null>(null);
+
+  // Action Modals toggles
+  const [isCreateOrgOpen, setIsCreateOrgOpen] = useState(false);
+  const [isRenameOrgOpen, setIsRenameOrgOpen] = useState(false);
+  const [isMembersModalOpen, setIsMembersModalOpen] = useState(false);
+  const [isCreateSectionOpen, setIsCreateSectionOpen] = useState(false);
+  const [isRenameSectionOpen, setIsRenameSectionOpen] = useState(false);
+  const [isCreatePageOpen, setIsCreatePageOpen] = useState(false);
+
+  // Modal input values
+  const [createOrgName, setCreateOrgName] = useState('');
+  const [renameOrgName, setRenameOrgName] = useState('');
+  const [selectedInviteUser, setSelectedInviteUser] = useState('');
+  const [membersList, setMembersList] = useState<any[]>([]);
+  const [inviteableUsers, setInviteableUsers] = useState<any[]>([]);
+  const [loadingMembers, setLoadingMembers] = useState(false);
+  const [newSectionTitle, setNewSectionTitle] = useState('');
+  const [renameSectionTitle, setRenameSectionTitle] = useState('');
+  const [activeRenameSectionId, setActiveRenameSectionId] = useState<string | null>(null);
+  const [newPageTitle, setNewPageTitle] = useState('');
+  const [newPageSlug, setNewPageSlug] = useState('');
+  const [activeNewPageCategoryId, setActiveNewPageCategoryId] = useState<string | null>(null);
+
+  // Custom Alerts & Confirmations
+  const [isConfirmDialogOpen, setIsConfirmDialogOpen] = useState(false);
+  const [confirmDialogConfig, setConfirmDialogConfig] = useState<{ title: string; message: string; onConfirm: () => void }>({
+    title: '',
+    message: '',
+    onConfirm: () => {}
+  });
+
+  const [isAlertDialogOpen, setIsAlertDialogOpen] = useState(false);
+  const [alertDialogConfig, setAlertDialogConfig] = useState<{ title: string; message: string; type: 'success' | 'error' | 'info' }>({
+    title: '',
+    message: '',
+    type: 'info'
+  });
+
+  const showAlertDialog = (title: string, message: string, type: 'success' | 'error' | 'info' = 'info') => {
+    setAlertDialogConfig({ title, message, type });
+    setIsAlertDialogOpen(true);
+  };
+
   useEffect(() => {
     if (session?.user?.user_metadata) {
       setUsername(session.user.user_metadata.username || '');
       setAvatarUrl(session.user.user_metadata.avatar_url || '');
+      setNewPassword('');
+      setConfirmPassword('');
     }
   }, [session, isProfileOpen]);
 
-  // Active page state (parsed from hash routing)
-  const [activePageId, setActivePageId] = useState<string>(() => {
-    const hash = window.location.hash.replace('#', '');
-    const found = allPages.find((p) => p.id === hash);
-    return found ? found.id : allPages[0]?.id || 'introduction';
-  });
+  useEffect(() => {
+    if (isConfigTabsOpen && activeOrg) {
+      setTempEnabledTabs(activeOrg.settings?.enabled_tabs || ['docs', 'forum', 'cloud', 'architecture', 'tasks']);
+    }
+  }, [isConfigTabsOpen, activeOrg]);
+
+
 
   // Search overlay toggle
   const [searchOpen, setSearchOpen] = useState(false);
@@ -112,13 +878,10 @@ function App() {
     const handleHashChange = () => {
       const hash = window.location.hash.replace('#', '');
       if (hash) {
-        const found = allPages.find((p) => p.id === hash);
-        if (found) {
-          setActiveTab('docs');
-          setActivePageId(found.id);
-          // Scroll content back to top when switching pages
-          window.scrollTo(0, 0);
-        }
+        setActiveTab('docs');
+        setActivePageId(hash);
+        // Scroll content back to top when switching pages
+        window.scrollTo(0, 0);
       }
     };
 
@@ -170,11 +933,19 @@ function App() {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setAuthLoading(false);
+      if (session?.user?.user_metadata?.first_login) {
+        setIsForcePasswordResetOpen(true);
+      }
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session);
       setAuthLoading(false);
+      if (event === 'PASSWORD_RECOVERY') {
+        setIsForcePasswordResetOpen(true);
+      } else if (session?.user?.user_metadata?.first_login) {
+        setIsForcePasswordResetOpen(true);
+      }
     });
 
     return () => subscription.unsubscribe();
@@ -251,6 +1022,50 @@ function App() {
     }
   };
 
+  const handleForceResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingForceReset(true);
+    setForceResetError(null);
+    setForceResetSuccess(null);
+
+    try {
+      if (forceNewPassword !== forceConfirmPassword) {
+        throw new Error('Passwords do not match.');
+      }
+      if (forceNewPassword.length < 6) {
+        throw new Error('Password must be at least 6 characters.');
+      }
+
+      // Update password and clear first_login metadata flag in Supabase auth
+      const { error } = await supabase.auth.updateUser({
+        password: forceNewPassword,
+        data: { first_login: false }
+      });
+
+      if (error) throw error;
+
+      setForceResetSuccess('Password updated successfully! Welcome to Docify.');
+      setForceNewPassword('');
+      setForceConfirmPassword('');
+
+      // Refresh the session metadata locally
+      const { data: { session: updatedSession } } = await supabase.auth.getSession();
+      if (updatedSession) {
+        setSession(updatedSession);
+      }
+
+      setTimeout(() => {
+        setIsForcePasswordResetOpen(false);
+        setForceResetSuccess(null);
+      }, 1500);
+    } catch (err: any) {
+      console.error('Password reset error:', err);
+      setForceResetError(err.message || 'Failed to update password. Please try again.');
+    } finally {
+      setSavingForceReset(false);
+    }
+  };
+
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     setSavingProfile(true);
@@ -258,15 +1073,33 @@ function App() {
     setProfileSuccess(null);
 
     try {
-      const { error } = await supabase.auth.updateUser({
+      // 1. Update Profile username and avatar
+      const { error: profileErr } = await supabase.auth.updateUser({
         data: {
           username: username.trim(),
           avatar_url: avatarUrl
         }
       });
 
-      if (error) throw error;
-      setProfileSuccess('Profile updated successfully!');
+      if (profileErr) throw profileErr;
+
+      // 2. Update Password if provided
+      if (newPassword) {
+        if (newPassword !== confirmPassword) {
+          throw new Error('Passwords do not match.');
+        }
+        if (newPassword.length < 6) {
+          throw new Error('Password must be at least 6 characters.');
+        }
+        const { error: pwdErr } = await supabase.auth.updateUser({
+          password: newPassword
+        });
+        if (pwdErr) throw pwdErr;
+      }
+
+      setProfileSuccess('Profile and password updated successfully!');
+      setNewPassword('');
+      setConfirmPassword('');
       setTimeout(() => {
         setIsProfileOpen(false);
         setProfileSuccess(null);
@@ -278,8 +1111,6 @@ function App() {
       setSavingProfile(false);
     }
   };
-
-  const activePage = allPages.find((p) => p.id === activePageId) || allPages[0];
 
   // Verify Supabase config exists. If not, show static developer warning instead of throwing.
   const hasSupabaseConfig = 
@@ -335,6 +1166,17 @@ function App() {
     return <Login onLoginSuccess={(sess) => setSession(sess)} />;
   }
 
+  if (!activeOrg) {
+    return (
+      <OrgSelectorPage
+        organizations={organizations}
+        onSelectOrg={handleSwitchOrganization}
+        onCreateOrg={handleCreateOrganization}
+        session={session}
+      />
+    );
+  }
+
   return (
     <div className="app-container">
       {/* Top sticky header */}
@@ -348,6 +1190,13 @@ function App() {
         setActiveTab={setActiveTab}
         session={session}
         onOpenProfile={() => setIsProfileOpen(true)}
+        organizations={organizations}
+        activeOrg={activeOrg}
+        onOpenCreateOrg={() => { setCreateOrgName(''); setIsCreateOrgOpen(true); }}
+        onOpenRenameOrg={() => { setRenameOrgName(activeOrg?.name || ''); setIsRenameOrgOpen(true); }}
+        onOpenWorkspaceMembers={() => { setIsMembersModalOpen(true); fetchMembersAndUsers(); }}
+        onSwitchOrg={handleSwitchOrganization}
+        onOpenConfigTabs={() => setIsConfigTabsOpen(true)}
       />
 
       {/* Conditionally render sections */}
@@ -361,6 +1210,12 @@ function App() {
             mobileMenuOpen={mobileMenuOpen}
             closeMobileMenu={() => setMobileMenuOpen(false)}
             width={isDesktopSidebar ? sidebarWidth : undefined}
+            docsConfig={docsConfig}
+            isEditable={!docsErrorMissingTable}
+            onAddPage={handleCreatePage}
+            onAddCategory={handleAddCategory}
+            onRenameCategory={handleRenameCategory}
+            onDeleteCategory={handleDeleteCategory}
           />
 
           {/* Left resize handle */}
@@ -391,16 +1246,161 @@ function App() {
               marginRight: isDesktopToc ? tocWidth : undefined
             }}
           >
-            {activePage ? (
-              <div className="content-container">
-                <DocContent page={activePage} onSelectPage={handleSelectPage} />
-              </div>
-            ) : (
-              <div className="content-container">
-                <h1>Page Not Found</h1>
-                <p>The requested page could not be located.</p>
-              </div>
-            )}
+            <div className="content-container">
+              {docsErrorMissingTable && (
+                <div style={{
+                  backgroundColor: 'var(--bg-secondary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: 'var(--radius-md)',
+                  padding: '16px 20px',
+                  marginBottom: '24px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '12px'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
+                    <AlertCircle size={16} style={{ color: '#f59e0b', flexShrink: 0 }} />
+                    <span>Documentation is currently <strong>read-only</strong>. Run the Supabase SQL schema to make it fully editable.</span>
+                  </div>
+                  <button 
+                    onClick={() => setDocsSetupOpen(true)}
+                    style={{
+                      padding: '6px 12px',
+                      borderRadius: 'var(--radius-sm)',
+                      backgroundColor: 'var(--primary)',
+                      color: 'var(--primary-contrast)',
+                      fontSize: '0.75rem',
+                      fontWeight: 700
+                    }}
+                  >
+                    View SQL Setup
+                  </button>
+                </div>
+              )}
+
+              {activePage ? (
+                <DocContent
+                  page={activePage}
+                  onSelectPage={handleSelectPage}
+                  allPages={allPages}
+                  isEditable={!docsErrorMissingTable}
+                  onSavePage={handleSavePage}
+                  onDeletePage={handleDeletePage}
+                  onError={(msg) => showAlertDialog('Error', msg, 'error')}
+                />
+              ) : docCategories.length === 0 ? (
+                <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: '80px 24px',
+                  textAlign: 'center',
+                  backgroundColor: 'var(--bg-secondary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: 'var(--radius-lg)',
+                  marginTop: '40px',
+                  maxWidth: '600px',
+                  marginLeft: 'auto',
+                  marginRight: 'auto'
+                }}>
+                  <div style={{
+                    width: '64px',
+                    height: '64px',
+                    borderRadius: '50%',
+                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    marginBottom: '24px',
+                    color: 'var(--primary)'
+                  }}>
+                    <BookOpen size={32} />
+                  </div>
+                  <h2 style={{ fontSize: '1.5rem', fontWeight: 800, marginBottom: '12px', color: 'var(--text-primary)' }}>
+                    Welcome to your new workspace!
+                  </h2>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.9375rem', lineHeight: 1.6, maxWidth: '400px', marginBottom: '32px' }}>
+                    Set up your documentation directory. Create your first section to get started.
+                  </p>
+                  <button
+                    onClick={handleAddCategory}
+                    className="submit-btn"
+                    style={{
+                      padding: '12px 24px',
+                      fontSize: '0.9375rem',
+                      fontWeight: 700,
+                      borderRadius: 'var(--radius-md)',
+                      backgroundColor: 'var(--primary)',
+                      color: 'var(--primary-contrast)',
+                      boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                      border: 'none',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s ease'
+                    }}
+                  >
+                    Get Started
+                  </button>
+                </div>
+              ) : (
+                <div style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: '80px 24px',
+                  textAlign: 'center',
+                  backgroundColor: 'var(--bg-secondary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: 'var(--radius-lg)',
+                  marginTop: '40px',
+                  maxWidth: '600px',
+                  marginLeft: 'auto',
+                  marginRight: 'auto'
+                }}>
+                  <div style={{
+                    width: '64px',
+                    height: '64px',
+                    borderRadius: '50%',
+                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    marginBottom: '24px',
+                    color: 'var(--primary)'
+                  }}>
+                    <BookOpen size={32} />
+                  </div>
+                  <h2 style={{ fontSize: '1.5rem', fontWeight: 800, marginBottom: '12px', color: 'var(--text-primary)' }}>
+                    Empty Section
+                  </h2>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.9375rem', lineHeight: 1.6, maxWidth: '400px', marginBottom: '32px' }}>
+                    This section has no pages yet. Create a page to begin drafting content.
+                  </p>
+                  {docCategories.length > 0 && (
+                    <button
+                      onClick={() => handleCreatePage(docCategories[0].id)}
+                      className="submit-btn"
+                      style={{
+                        padding: '12px 24px',
+                        fontSize: '0.9375rem',
+                        fontWeight: 700,
+                        borderRadius: 'var(--radius-md)',
+                        backgroundColor: 'var(--primary)',
+                        color: 'var(--primary-contrast)',
+                        boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                        border: 'none',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease'
+                      }}
+                    >
+                      Create First Page
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           </main>
 
           {/* Right resize handle */}
@@ -423,10 +1423,10 @@ function App() {
       ) : (
         /* Full width dashboard sections (Forum, Cloud Deployment, Architecture, Tasks) */
         <div className="workspace-wrapper">
-          {activeTab === 'forum' && <Forum session={session} />}
+          {activeTab === 'forum' && <Forum session={session} activeOrg={activeOrg} />}
           {activeTab === 'cloud' && <CloudDeployment />}
           {activeTab === 'architecture' && <ArchitectureExplorer />}
-          {activeTab === 'tasks' && <Tasks session={session} />}
+          {activeTab === 'tasks' && <Tasks session={session} activeOrg={activeOrg} />}
         </div>
       )}
 
@@ -435,6 +1435,7 @@ function App() {
         isOpen={searchOpen}
         onClose={() => setSearchOpen(false)}
         onSelectPage={handleSelectPage}
+        allPages={allPages}
       />
 
       {/* Edit Profile Modal */}
@@ -443,7 +1444,7 @@ function App() {
           <div className="modal-card profile-modal-card" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h2>Edit Profile</h2>
-              <button className="close-modal-btn" onClick={() => setIsProfileOpen(false)}>×</button>
+              <button className="close-modal-btn" onClick={() => setIsProfileOpen(false)}><X size={18} /></button>
             </div>
             
             <form onSubmit={handleSaveProfile} className="modal-form">
@@ -498,6 +1499,30 @@ function App() {
                 />
               </div>
 
+              <div className="form-group">
+                <label htmlFor="profile-new-password">New Password (Optional)</label>
+                <input
+                  id="profile-new-password"
+                  type="password"
+                  placeholder="Enter new password (min. 6 chars)"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  disabled={savingProfile || uploadingProfile}
+                />
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="profile-confirm-password">Confirm New Password</label>
+                <input
+                  id="profile-confirm-password"
+                  type="password"
+                  placeholder="Confirm your new password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  disabled={savingProfile || uploadingProfile}
+                />
+              </div>
+
               {profileError && <div className="profile-error-alert">{profileError}</div>}
               {profileSuccess && <div className="profile-success-alert">{profileSuccess}</div>}
 
@@ -526,6 +1551,623 @@ function App() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Force Password Reset Modal (First Login / Recovery) */}
+      {isForcePasswordResetOpen && (
+        <div className="modal-overlay">
+          <div className="modal-card" style={{ maxWidth: '450px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Set New Password</h2>
+            </div>
+            
+            <form onSubmit={handleForceResetPassword} className="modal-form" style={{ padding: '20px 0 0 0' }}>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', lineHeight: 1.5, marginBottom: '20px' }}>
+                Please set a new password to secure your account and complete your first-time login setup.
+              </p>
+
+              <div className="form-group">
+                <label htmlFor="force-new-password">New Password</label>
+                <input
+                  id="force-new-password"
+                  type="password"
+                  placeholder="Enter new password (min. 6 chars)"
+                  value={forceNewPassword}
+                  onChange={(e) => setForceNewPassword(e.target.value)}
+                  required
+                  disabled={savingForceReset}
+                  autoFocus
+                />
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="force-confirm-password">Confirm Password</label>
+                <input
+                  id="force-confirm-password"
+                  type="password"
+                  placeholder="Confirm your new password"
+                  value={forceConfirmPassword}
+                  onChange={(e) => setForceConfirmPassword(e.target.value)}
+                  required
+                  disabled={savingForceReset}
+                />
+              </div>
+
+              {forceResetError && <div className="profile-error-alert">{forceResetError}</div>}
+              {forceResetSuccess && <div className="profile-success-alert">{forceResetSuccess}</div>}
+
+              <div className="form-actions" style={{ marginTop: '24px' }}>
+                <button
+                  type="submit"
+                  className="submit-btn"
+                  disabled={savingForceReset}
+                  style={{ width: '100%' }}
+                >
+                  {savingForceReset ? (
+                    <>
+                      <Loader className="animate-spin" size={14} />
+                      <span>Updating Password...</span>
+                    </>
+                  ) : (
+                    'Update Password'
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Workspace Tab Configuration Modal */}
+      {isConfigTabsOpen && activeOrg && (
+        <div className="modal-overlay" onClick={() => setIsConfigTabsOpen(false)}>
+          <div className="modal-card" style={{ maxWidth: '500px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Configure Workspace Tabs</h2>
+              <button className="close-modal-btn" onClick={() => setIsConfigTabsOpen(false)}>
+                <X size={18} />
+              </button>
+            </div>
+            
+            <div className="modal-body" style={{ padding: '24px' }}>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', marginBottom: '20px', lineHeight: 1.5 }}>
+                Select the tabs to display in the header navigation for the <strong>{activeOrg.name}</strong> workspace. Note that Docs and Forum are essential and always enabled.
+              </p>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '24px' }}>
+                {/* Docs (Always enabled) */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-secondary)', opacity: 0.6 }}>
+                  <input type="checkbox" checked disabled style={{ width: '16px', height: '16px', accentColor: 'var(--primary)' }} />
+                  <div>
+                    <strong style={{ display: 'block', fontSize: '0.9375rem', color: 'var(--text-primary)' }}>Docs</strong>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Common documentation workspace</span>
+                  </div>
+                </div>
+
+                {/* Forum (Always enabled) */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-secondary)', opacity: 0.6 }}>
+                  <input type="checkbox" checked disabled style={{ width: '16px', height: '16px', accentColor: 'var(--primary)' }} />
+                  <div>
+                    <strong style={{ display: 'block', fontSize: '0.9375rem', color: 'var(--text-primary)' }}>Forum</strong>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Discussion forum and team announcements</span>
+                  </div>
+                </div>
+
+                {/* Cloud Deployment */}
+                <label style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)', cursor: 'pointer' }} className="hover-card">
+                  <input
+                    type="checkbox"
+                    checked={tempEnabledTabs.includes('cloud')}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setTempEnabledTabs(prev => Array.from(new Set([...prev, 'cloud'])));
+                      } else {
+                        setTempEnabledTabs(prev => prev.filter(t => t !== 'cloud'));
+                      }
+                    }}
+                    style={{ width: '16px', height: '16px', accentColor: 'var(--primary)' }}
+                  />
+                  <div>
+                    <strong style={{ display: 'block', fontSize: '0.9375rem', color: 'var(--text-primary)' }}>Cloud Deployment</strong>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>VPC layout, subnets, and instances configuration</span>
+                  </div>
+                </label>
+
+                {/* Architecture */}
+                <label style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)', cursor: 'pointer' }} className="hover-card">
+                  <input
+                    type="checkbox"
+                    checked={tempEnabledTabs.includes('architecture')}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setTempEnabledTabs(prev => Array.from(new Set([...prev, 'architecture'])));
+                      } else {
+                        setTempEnabledTabs(prev => prev.filter(t => t !== 'architecture'));
+                      }
+                    }}
+                    style={{ width: '16px', height: '16px', accentColor: 'var(--primary)' }}
+                  />
+                  <div>
+                    <strong style={{ display: 'block', fontSize: '0.9375rem', color: 'var(--text-primary)' }}>Architecture</strong>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Interactive architecture blueprint explorer</span>
+                  </div>
+                </label>
+
+                {/* Tasks */}
+                <label style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)', cursor: 'pointer' }} className="hover-card">
+                  <input
+                    type="checkbox"
+                    checked={tempEnabledTabs.includes('tasks')}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setTempEnabledTabs(prev => Array.from(new Set([...prev, 'tasks'])));
+                      } else {
+                        setTempEnabledTabs(prev => prev.filter(t => t !== 'tasks'));
+                      }
+                    }}
+                    style={{ width: '16px', height: '16px', accentColor: 'var(--primary)' }}
+                  />
+                  <div>
+                    <strong style={{ display: 'block', fontSize: '0.9375rem', color: 'var(--text-primary)' }}>Tasks</strong>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Collaborative project tasks and subtasks board</span>
+                  </div>
+                </label>
+              </div>
+
+              <div className="form-actions" style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  className="cancel-btn"
+                  onClick={() => setIsConfigTabsOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="submit-btn"
+                  onClick={() => handleUpdateTabs(tempEnabledTabs)}
+                >
+                  Save Settings
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create Organization Modal */}
+      {isCreateOrgOpen && (
+        <div className="modal-overlay" onClick={() => setIsCreateOrgOpen(false)}>
+          <div className="modal-card" style={{ maxWidth: '450px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Create Organization</h2>
+              <button className="close-modal-btn" onClick={() => setIsCreateOrgOpen(false)}><X size={18} /></button>
+            </div>
+            <form onSubmit={(e) => { e.preventDefault(); handleCreateOrganization(createOrgName); }} className="modal-form">
+              <div className="form-group">
+                <label htmlFor="create-org-name">Organization Name</label>
+                <input
+                  id="create-org-name"
+                  type="text"
+                  placeholder="Enter name for the new organization"
+                  value={createOrgName}
+                  onChange={(e) => setCreateOrgName(e.target.value)}
+                  required
+                  autoFocus
+                />
+              </div>
+              <div className="form-actions">
+                <button type="button" className="cancel-btn" onClick={() => setIsCreateOrgOpen(false)}>Cancel</button>
+                <button type="submit" className="submit-btn">Create</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Rename Organization Modal */}
+      {isRenameOrgOpen && activeOrg && (
+        <div className="modal-overlay" onClick={() => setIsRenameOrgOpen(false)}>
+          <div className="modal-card" style={{ maxWidth: '450px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Rename Organization</h2>
+              <button className="close-modal-btn" onClick={() => setIsRenameOrgOpen(false)}><X size={18} /></button>
+            </div>
+            <form onSubmit={(e) => { e.preventDefault(); handleRenameOrganization(renameOrgName); }} className="modal-form">
+              <div className="form-group">
+                <label htmlFor="rename-org-name">Organization Name</label>
+                <input
+                  id="rename-org-name"
+                  type="text"
+                  placeholder="Enter new organization name"
+                  value={renameOrgName}
+                  onChange={(e) => setRenameOrgName(e.target.value)}
+                  required
+                  autoFocus
+                />
+              </div>
+              <div className="form-actions">
+                <button type="button" className="cancel-btn" onClick={() => setIsRenameOrgOpen(false)}>Cancel</button>
+                <button type="submit" className="submit-btn">Save Changes</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Workspace Members Modal */}
+      {isMembersModalOpen && activeOrg && (
+        <div className="modal-overlay" onClick={() => setIsMembersModalOpen(false)}>
+          <div className="modal-card" style={{ maxWidth: '600px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Workspace Members: {activeOrg.name}</h2>
+              <button className="close-modal-btn" onClick={() => setIsMembersModalOpen(false)}>
+                <X size={18} />
+              </button>
+            </div>
+            
+            <div className="modal-body" style={{ padding: '20px 0 0 0' }}>
+              {loadingMembers ? (
+                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '30px 0', gap: '8px', color: 'var(--text-secondary)' }}>
+                  <Loader className="animate-spin" size={18} />
+                  <span>Loading members...</span>
+                </div>
+              ) : (
+                <>
+                  {/* Members list */}
+                  <div style={{ maxHeight: '250px', overflowY: 'auto', marginBottom: '24px', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem', textAlign: 'left' }}>
+                      <thead>
+                        <tr style={{ backgroundColor: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)' }}>
+                          <th style={{ padding: '12px 16px', color: 'var(--text-muted)', fontWeight: 600 }}>Member</th>
+                          <th style={{ padding: '12px 16px', color: 'var(--text-muted)', fontWeight: 600 }}>Role</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {membersList.map((m: any) => (
+                          <tr key={m.user_id} style={{ borderBottom: '1px solid var(--border-color)' }}>
+                            <td style={{ padding: '12px 16px' }}>
+                              <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{m.username || 'User'}</div>
+                              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{m.email}</div>
+                            </td>
+                            <td style={{ padding: '12px 16px' }}>
+                              <span style={{ fontSize: '0.75rem', textTransform: 'capitalize', backgroundColor: 'var(--bg-primary)', border: '1px solid var(--border-color)', padding: '2px 8px', borderRadius: '10px', color: 'var(--text-secondary)' }}>
+                                {m.role}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Invite section */}
+                  <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '20px' }}>
+                    <h3 style={{ fontSize: '0.9375rem', fontWeight: 700, marginBottom: '12px', color: 'var(--text-primary)' }}>Add Registered User to Workspace</h3>
+                    <form onSubmit={handleInviteFromDropdown} className="modal-form" style={{ display: 'flex', gap: '12px', alignItems: 'flex-end' }}>
+                      <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+                        <label htmlFor="invite-select-user" style={{ fontSize: '0.75rem' }}>Select Registered User</label>
+                        <select
+                          id="invite-select-user"
+                          value={selectedInviteUser}
+                          onChange={(e) => setSelectedInviteUser(e.target.value)}
+                          required
+                          style={{
+                            width: '100%',
+                            padding: '10px 14px',
+                            borderRadius: 'var(--radius-md)',
+                            border: '1px solid var(--border-color)',
+                            backgroundColor: 'var(--bg-primary)',
+                            color: 'var(--text-primary)',
+                            outline: 'none',
+                            fontSize: '0.875rem'
+                          }}
+                        >
+                          <option value="">-- Choose User --</option>
+                          {inviteableUsers.map((u: any) => (
+                            <option key={u.id} value={u.email}>
+                              {u.username ? `${u.username} (${u.email})` : u.email}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <button
+                        type="submit"
+                        className="submit-btn"
+                        disabled={!selectedInviteUser || loadingMembers}
+                        style={{ height: '42px', padding: '0 20px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                      >
+                        <Plus size={16} />
+                        <span>Add Member</span>
+                      </button>
+                    </form>
+                    {inviteableUsers.length === 0 && !loadingMembers && (
+                      <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '8px', margin: '8px 0 0 0' }}>
+                        No other registered users are available to add. Invitees must sign up on Docify first.
+                      </p>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+            
+            <div className="form-actions" style={{ marginTop: '24px', justifyContent: 'flex-end' }}>
+              <button type="button" className="cancel-btn" onClick={() => setIsMembersModalOpen(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create Section Modal */}
+      {isCreateSectionOpen && (
+        <div className="modal-overlay" onClick={() => setIsCreateSectionOpen(false)}>
+          <div className="modal-card" style={{ maxWidth: '450px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Add Section</h2>
+              <button className="close-modal-btn" onClick={() => setIsCreateSectionOpen(false)}><X size={18} /></button>
+            </div>
+            <form onSubmit={submitAddCategory} className="modal-form">
+              <div className="form-group">
+                <label htmlFor="section-title">Section Title</label>
+                <input
+                  id="section-title"
+                  type="text"
+                  placeholder="Enter section title"
+                  value={newSectionTitle}
+                  onChange={(e) => setNewSectionTitle(e.target.value)}
+                  required
+                  autoFocus
+                />
+              </div>
+              <div className="form-actions">
+                <button type="button" className="cancel-btn" onClick={() => setIsCreateSectionOpen(false)}>Cancel</button>
+                <button type="submit" className="submit-btn">Add Section</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Rename Section Modal */}
+      {isRenameSectionOpen && (
+        <div className="modal-overlay" onClick={() => setIsRenameSectionOpen(false)}>
+          <div className="modal-card" style={{ maxWidth: '450px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Rename Section</h2>
+              <button className="close-modal-btn" onClick={() => setIsRenameSectionOpen(false)}><X size={18} /></button>
+            </div>
+            <form onSubmit={submitRenameCategory} className="modal-form">
+              <div className="form-group">
+                <label htmlFor="rename-section-title">Section Title</label>
+                <input
+                  id="rename-section-title"
+                  type="text"
+                  placeholder="Enter section title"
+                  value={renameSectionTitle}
+                  onChange={(e) => setRenameSectionTitle(e.target.value)}
+                  required
+                  autoFocus
+                />
+              </div>
+              <div className="form-actions">
+                <button type="button" className="cancel-btn" onClick={() => setIsRenameSectionOpen(false)}>Cancel</button>
+                <button type="submit" className="submit-btn">Save Changes</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Create Page Modal */}
+      {isCreatePageOpen && (
+        <div className="modal-overlay" onClick={() => setIsCreatePageOpen(false)}>
+          <div className="modal-card" style={{ maxWidth: '450px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Add Page</h2>
+              <button className="close-modal-btn" onClick={() => setIsCreatePageOpen(false)}><X size={18} /></button>
+            </div>
+            <form onSubmit={submitCreatePage} className="modal-form">
+              <div className="form-group">
+                <label htmlFor="new-page-title">Page Title</label>
+                <input
+                  id="new-page-title"
+                  type="text"
+                  placeholder="Enter page title"
+                  value={newPageTitle}
+                  onChange={(e) => {
+                    setNewPageTitle(e.target.value);
+                    setNewPageSlug(e.target.value.trim().toLowerCase()
+                      .replace(/[^\w\s-]/g, '')
+                      .replace(/\s+/g, '-'));
+                  }}
+                  required
+                  autoFocus
+                />
+              </div>
+              <div className="form-group">
+                <label htmlFor="new-page-slug">URL Identifier (Slug)</label>
+                <input
+                  id="new-page-slug"
+                  type="text"
+                  placeholder="enter-page-slug"
+                  value={newPageSlug}
+                  onChange={(e) => setNewPageSlug(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="form-actions">
+                <button type="button" className="cancel-btn" onClick={() => setIsCreatePageOpen(false)}>Cancel</button>
+                <button type="submit" className="submit-btn">Create Page</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Confirmation Dialog Modal */}
+      {isConfirmDialogOpen && (
+        <div className="modal-overlay" onClick={() => setIsConfirmDialogOpen(false)}>
+          <div className="modal-card" style={{ maxWidth: '400px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>{confirmDialogConfig.title}</h2>
+              <button className="close-modal-btn" onClick={() => setIsConfirmDialogOpen(false)}><X size={18} /></button>
+            </div>
+            <div className="modal-body" style={{ padding: '24px' }}>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9375rem', lineHeight: 1.5, marginBottom: '20px' }}>
+                {confirmDialogConfig.message}
+              </p>
+              <div className="form-actions" style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  className="cancel-btn"
+                  onClick={() => setIsConfirmDialogOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="submit-btn"
+                  style={{ backgroundColor: '#ef4444', color: '#ffffff' }}
+                  onClick={() => {
+                    confirmDialogConfig.onConfirm();
+                    setIsConfirmDialogOpen(false);
+                  }}
+                >
+                  Confirm
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Alert/Notification Modal */}
+      {isAlertDialogOpen && (
+        <div className="modal-overlay" onClick={() => setIsAlertDialogOpen(false)}>
+          <div className="modal-card" style={{ maxWidth: alertDialogConfig.message.includes('create or replace') ? '680px' : '420px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2 style={{ color: alertDialogConfig.type === 'error' ? '#ef4444' : alertDialogConfig.type === 'success' ? '#10b981' : 'var(--text-primary)' }}>
+                {alertDialogConfig.title}
+              </h2>
+              <button className="close-modal-btn" onClick={() => setIsAlertDialogOpen(false)}><X size={18} /></button>
+            </div>
+            <div className="modal-body" style={{ padding: '24px' }}>
+              {alertDialogConfig.message.includes('create or replace') ? (
+                <div>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.9375rem', lineHeight: 1.5, marginBottom: '16px' }}>
+                    The database routine failed. Copy and run this SQL script in your <strong>Supabase Dashboard SQL Editor</strong> to fix the extension search path:
+                  </p>
+                  <pre style={{
+                    backgroundColor: 'var(--bg-secondary)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: 'var(--radius-md)',
+                    padding: '16px',
+                    fontSize: '0.75rem',
+                    lineHeight: 1.5,
+                    overflowX: 'auto',
+                    color: 'var(--text-secondary)',
+                    maxHeight: '300px',
+                    marginBottom: '20px',
+                    textAlign: 'left'
+                  }}>
+                    {alertDialogConfig.message}
+                  </pre>
+                </div>
+              ) : (
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9375rem', lineHeight: 1.5, marginBottom: '20px', whiteSpace: 'pre-wrap', textAlign: 'left' }}>
+                  {alertDialogConfig.message}
+                </p>
+              )}
+              <div className="form-actions" style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  className="submit-btn"
+                  onClick={() => setIsAlertDialogOpen(false)}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Docs setup SQL modal */}
+      {docsSetupOpen && (
+        <div className="modal-overlay" onClick={() => setDocsSetupOpen(false)}>
+          <div className="modal-card" style={{ maxWidth: '640px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '1.25rem' }}>
+                <Database size={20} /> Editable Docs SQL Setup
+              </h2>
+              <button className="close-modal-btn" onClick={() => setDocsSetupOpen(false)}><X size={18} /></button>
+            </div>
+            <div style={{ padding: '24px' }}>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', lineHeight: 1.5, marginBottom: '16px' }}>
+                Paste and run this SQL script in your Supabase SQL Editor. This enables dynamic documentation directories and page edits:
+              </p>
+              <pre style={{
+                backgroundColor: 'var(--bg-secondary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: 'var(--radius-md)',
+                padding: '16px',
+                fontSize: '0.75rem',
+                lineHeight: 1.5,
+                overflowX: 'auto',
+                color: 'var(--text-secondary)',
+                maxHeight: '300px',
+                marginBottom: '20px'
+              }}>
+{`create table if not exists public.doc_categories (
+  id uuid default gen_random_uuid() primary key,
+  title text not null,
+  sort_order integer default 0,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+create table if not exists public.doc_pages (
+  id uuid default gen_random_uuid() primary key,
+  category_id uuid references public.doc_categories(id) on delete cascade not null,
+  slug text unique not null,
+  title text not null,
+  content text not null,
+  sort_order integer default 0,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+alter table public.doc_categories enable row level security;
+alter table public.doc_pages enable row level security;
+
+create policy "Allow all actions for authenticated users on doc_categories"
+on public.doc_categories for all using (true) with check (true);
+
+create policy "Allow all actions for authenticated users on doc_pages"
+on public.doc_pages for all using (true) with check (true);`}
+              </pre>
+              <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                <button 
+                  className="cancel-btn" 
+                  onClick={() => setDocsSetupOpen(false)}
+                >
+                  Close
+                </button>
+                <button 
+                  className="submit-btn" 
+                  onClick={async () => {
+                    await fetchDocumentation();
+                    if (!docsErrorMissingTable) {
+                      setDocsSetupOpen(false);
+                    } else {
+                      alert('Database tables not detected yet. Make sure you ran the SQL query successfully.');
+                    }
+                  }}
+                >
+                  Check Connection Again
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

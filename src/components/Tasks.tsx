@@ -33,6 +33,7 @@ interface TaskComment {
 
 interface TasksProps {
   session: any;
+  activeOrg: any | null;
 }
 
 const CATEGORIES = ['Architecture', 'Auth', 'API', 'Payments', 'Database'];
@@ -49,7 +50,7 @@ const PRIORITIES = [
   { id: 'high', label: 'High', color: '#ef4444' }
 ];
 
-export const Tasks: React.FC<TasksProps> = ({ session }) => {
+export const Tasks: React.FC<TasksProps> = ({ session, activeOrg }) => {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMissingTable, setErrorMissingTable] = useState(false);
@@ -61,6 +62,7 @@ export const Tasks: React.FC<TasksProps> = ({ session }) => {
   // Modals
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [taskToDeleteId, setTaskToDeleteId] = useState<string | null>(null);
 
   // Form states for new task
   const [newTitle, setNewTitle] = useState('');
@@ -114,6 +116,7 @@ export const Tasks: React.FC<TasksProps> = ({ session }) => {
   };
 
   const fetchTasks = async () => {
+    if (!activeOrg) return;
     try {
       setLoading(true);
       setErrorMissingTable(false);
@@ -121,7 +124,8 @@ export const Tasks: React.FC<TasksProps> = ({ session }) => {
       // Fetch tasks
       const { data: tasksData, error: tasksError } = await supabase
         .from('tasks')
-        .select('*');
+        .select('*')
+        .eq('organization_id', activeOrg.id);
 
       if (tasksError) {
         if (tasksError.code === '42P01') {
@@ -170,7 +174,12 @@ export const Tasks: React.FC<TasksProps> = ({ session }) => {
   };
 
   useEffect(() => {
-    fetchTasks();
+    if (activeOrg) {
+      fetchTasks();
+    }
+  }, [activeOrg?.id]);
+
+  useEffect(() => {
     fetchUsers();
   }, [session]);
 
@@ -214,7 +223,7 @@ export const Tasks: React.FC<TasksProps> = ({ session }) => {
   // Create Task
   const handleCreateTask = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newTitle.trim()) return;
+    if (!newTitle.trim() || !activeOrg) return;
 
     setCreating(true);
     const creatorName = session?.user?.user_metadata?.username || session?.user?.email || 'Anonymous';
@@ -226,7 +235,8 @@ export const Tasks: React.FC<TasksProps> = ({ session }) => {
       assignee: newAssignee.trim() || null,
       priority: newPriority,
       status: 'todo',
-      creator: creatorName
+      creator: creatorName,
+      organization_id: activeOrg.id
     };
 
     try {
@@ -299,18 +309,22 @@ export const Tasks: React.FC<TasksProps> = ({ session }) => {
 
   // Delete Task
   const handleDeleteTask = async (taskId: string) => {
-    if (!window.confirm('Are you sure you want to delete this task? All subtasks and comments will be lost.')) return;
+    setTaskToDeleteId(taskId);
+  };
 
+  const executeDeleteTask = async () => {
+    if (!taskToDeleteId) return;
     try {
       const { error } = await supabase
         .from('tasks')
         .delete()
-        .eq('id', taskId);
+        .eq('id', taskToDeleteId);
 
       if (error) throw error;
 
-      setTasks((prev) => prev.filter((t) => t.id !== taskId));
+      setTasks((prev) => prev.filter((t) => t.id !== taskToDeleteId));
       setSelectedTaskId(null);
+      setTaskToDeleteId(null);
     } catch (err) {
       console.error('Failed to delete task:', err);
     }
@@ -1136,6 +1150,40 @@ grant execute on function public.get_users_list() to authenticated;`}
                     <Trash2 size={14} /> Delete Task
                   </button>
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Task Confirmation Modal */}
+      {taskToDeleteId && (
+        <div className="modal-overlay" onClick={() => setTaskToDeleteId(null)}>
+          <div className="modal-card" style={{ maxWidth: '400px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Delete Task</h2>
+              <button className="close-modal-btn" onClick={() => setTaskToDeleteId(null)}><X size={18} /></button>
+            </div>
+            <div className="modal-body" style={{ padding: '24px' }}>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9375rem', lineHeight: 1.5, marginBottom: '20px' }}>
+                Are you sure you want to delete this task? All subtasks and comments will be lost permanently.
+              </p>
+              <div className="form-actions" style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  className="cancel-btn"
+                  onClick={() => setTaskToDeleteId(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="submit-btn"
+                  style={{ backgroundColor: '#ef4444', color: '#ffffff' }}
+                  onClick={executeDeleteTask}
+                >
+                  Delete Task
+                </button>
               </div>
             </div>
           </div>
