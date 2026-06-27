@@ -351,6 +351,7 @@ function App() {
           'Supabase SQL Setup Required',
           `Please run the following SQL script in your Supabase Dashboard SQL Editor to support listing users and members:
 
+drop function if exists public.get_registered_users();
 create or replace function public.get_registered_users()
 returns table (email text, id uuid, username text)
 language plpgsql
@@ -368,6 +369,7 @@ begin
 end;
 $$;
 
+drop function if exists public.get_organization_members(uuid);
 create or replace function public.get_organization_members(org_id uuid)
 returns table (user_id uuid, email text, username text, role text)
 language plpgsql
