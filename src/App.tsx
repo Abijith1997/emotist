@@ -2274,6 +2274,7 @@ $$;`,
               }}>
 {`create table if not exists public.doc_categories (
   id uuid default gen_random_uuid() primary key,
+  organization_id uuid references public.organizations(id) on delete cascade not null,
   title text not null,
   sort_order integer default 0,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
@@ -2292,11 +2293,46 @@ create table if not exists public.doc_pages (
 alter table public.doc_categories enable row level security;
 alter table public.doc_pages enable row level security;
 
-create policy "Allow all actions for authenticated users on doc_categories"
-on public.doc_categories for all using (true) with check (true);
+drop policy if exists "Allow all actions for authenticated users on doc_categories" on public.doc_categories;
+drop policy if exists "Allow all actions for workspace members on doc_categories" on public.doc_categories;
+drop policy if exists "Allow all actions for authenticated users on doc_pages" on public.doc_pages;
+drop policy if exists "Allow all actions for workspace members on doc_pages" on public.doc_pages;
 
-create policy "Allow all actions for authenticated users on doc_pages"
-on public.doc_pages for all using (true) with check (true);`}
+create policy "Allow all actions for workspace members on doc_categories"
+on public.doc_categories for all
+using (
+  exists (
+    select 1 from public.organization_members
+    where organization_members.organization_id = doc_categories.organization_id 
+    and organization_members.user_id = auth.uid()
+  )
+)
+with check (
+  exists (
+    select 1 from public.organization_members
+    where organization_members.organization_id = doc_categories.organization_id 
+    and organization_members.user_id = auth.uid()
+  )
+);
+
+create policy "Allow all actions for workspace members on doc_pages"
+on public.doc_pages for all
+using (
+  exists (
+    select 1 from public.doc_categories c
+    join public.organization_members m on c.organization_id = m.organization_id
+    where c.id = doc_pages.category_id 
+    and m.user_id = auth.uid()
+  )
+)
+with check (
+  exists (
+    select 1 from public.doc_categories c
+    join public.organization_members m on c.organization_id = m.organization_id
+    where c.id = doc_pages.category_id 
+    and m.user_id = auth.uid()
+  )
+);`}
               </pre>
               <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
                 <button 
