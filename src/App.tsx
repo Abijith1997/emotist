@@ -10,6 +10,7 @@ import { ArchitectureExplorer } from './components/ArchitectureExplorer';
 import { staticDocsConfig, staticAllPages } from './docs-config';
 import { supabase } from './supabaseClient';
 import { Login } from './components/Login';
+import { ResetPassword } from './components/ResetPassword';
 import { OrgSelectorPage } from './components/OrgSelectorPage';
 import { Loader, Camera, AlertCircle, Database, X, BookOpen, Plus, MessageSquare, Cloud, Network, CheckSquare } from 'lucide-react';
 import { Tasks } from './components/Tasks';
@@ -19,6 +20,7 @@ type Tab = 'docs' | 'forum' | 'cloud' | 'architecture' | 'tasks';
 function App() {
   const [session, setSession] = useState<any>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [isResettingPassword, setIsResettingPassword] = useState(false);
 
   // Active page state (parsed from hash routing)
   const [activePageId, setActivePageId] = useState<string>(() => {
@@ -1050,6 +1052,11 @@ $$;`,
 
   // Monitor authentication state
   useEffect(() => {
+    // Check if recovery link parameters are present in URL on start
+    if (window.location.hash.includes('type=recovery') || window.location.href.includes('type=recovery') || window.location.hash.includes('recovery_token')) {
+      setIsResettingPassword(true);
+    }
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setAuthLoading(false);
@@ -1062,7 +1069,7 @@ $$;`,
       setSession(session);
       setAuthLoading(false);
       if (event === 'PASSWORD_RECOVERY') {
-        setIsForcePasswordResetOpen(true);
+        setIsResettingPassword(true);
       } else if (session?.user?.user_metadata?.first_login) {
         setIsForcePasswordResetOpen(true);
       }
@@ -1280,6 +1287,10 @@ $$;`,
         <span>Verifying security session...</span>
       </div>
     );
+  }
+
+  if (isResettingPassword) {
+    return <ResetPassword onSuccess={() => setIsResettingPassword(false)} />;
   }
 
   if (!session) {
