@@ -345,11 +345,13 @@ function App() {
         msg.includes('get_organization_members') || 
         msg.includes('get_registered_users') || 
         msg.includes('created_at') || 
-        msg.includes('column')
+        msg.includes('column') ||
+        msg.includes('remove_user_from_organization') ||
+        msg.includes('invite_user_to_organization')
       ) {
         showAlertDialog(
           'Supabase SQL Setup Required',
-          `Please run the following SQL script in your Supabase Dashboard SQL Editor to support listing users and members:
+          `Please run the following SQL script in your Supabase Dashboard SQL Editor to support workspace member functions:
 
 drop function if exists public.get_registered_users();
 create or replace function public.get_registered_users()
@@ -397,6 +399,67 @@ begin
   where m.organization_id = org_id
   order by u.email;
 end;
+$$;
+
+drop function if exists public.invite_user_to_organization(text, uuid);
+create or replace function public.invite_user_to_organization(email_address text, org_id uuid)
+returns json
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  target_user_id uuid;
+  caller_role text;
+begin
+  if auth.role() <> 'authenticated' then
+    return json_build_object('success', false, 'error', 'Not authenticated');
+  end if;
+  select role into caller_role
+  from public.organization_members
+  where organization_id = org_id and user_id = auth.uid();
+  if caller_role is null or caller_role <> 'owner' then
+    return json_build_object('success', false, 'error', 'Access denied. Only workspace owners can add members.');
+  end if;
+  select id into target_user_id
+  from auth.users
+  where email = email_address;
+  if target_user_id is null then
+    return json_build_object('success', false, 'error', 'User not found. They must sign up on Docify first.');
+  end if;
+  insert into public.organization_members (organization_id, user_id, role)
+  values (org_id, target_user_id, 'member')
+  on conflict (organization_id, user_id) do update set role = 'member';
+  return json_build_object('success', true);
+end;
+$$;
+
+drop function if exists public.remove_user_from_organization(uuid, uuid);
+create or replace function public.remove_user_from_organization(org_id uuid, member_id uuid)
+returns json
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  caller_role text;
+begin
+  if auth.role() <> 'authenticated' then
+    return json_build_object('success', false, 'error', 'Not authenticated');
+  end if;
+  select role into caller_role
+  from public.organization_members
+  where organization_id = org_id and user_id = auth.uid();
+  if caller_role is null or caller_role <> 'owner' then
+    return json_build_object('success', false, 'error', 'Access denied. Only workspace owners can remove members.');
+  end if;
+  if member_id = auth.uid() then
+    return json_build_object('success', false, 'error', 'You cannot remove yourself from the workspace.');
+  end if;
+  delete from public.organization_members
+  where organization_id = org_id and user_id = member_id;
+  return json_build_object('success', true);
+end;
 $$;`,
           'error'
         );
@@ -435,6 +498,38 @@ $$;`,
       console.error('Failed to add member:', err);
       showAlertDialog('Error', 'Failed to add member: ' + err.message, 'error');
     }
+  };
+
+  const handleRemoveMember = async (memberId: string, email: string) => {
+    if (!activeOrg) return;
+    setConfirmDialogConfig({
+      title: 'Remove Member',
+      message: `Are you sure you want to remove ${email} from this workspace? They will lose access immediately.`,
+      onConfirm: async () => {
+        setLoadingMembers(true);
+        try {
+          const { data, error } = await supabase.rpc('remove_user_from_organization', {
+            org_id: activeOrg.id,
+            member_id: memberId
+          });
+
+          if (error) throw error;
+
+          if (data && data.success) {
+            showAlertDialog('Success', `${email} has been removed from the workspace.`, 'success');
+            await fetchMembersAndUsers();
+          } else {
+            throw new Error(data?.error || 'Failed to remove member.');
+          }
+        } catch (err: any) {
+          console.error('Failed to remove member:', err);
+          showAlertDialog('Error', 'Failed to remove member: ' + err.message, 'error');
+        } finally {
+          setLoadingMembers(false);
+        }
+      }
+    });
+    setIsConfirmDialogOpen(true);
   };
 
   const handleSwitchOrganization = (org: any) => {
@@ -1830,107 +1925,132 @@ $$;`,
       )}
 
       {/* Workspace Members Modal */}
-      {isMembersModalOpen && activeOrg && (
-        <div className="modal-overlay" onClick={() => setIsMembersModalOpen(false)}>
-          <div className="modal-card" style={{ maxWidth: '600px' }} onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h2>Workspace Members: {activeOrg.name}</h2>
-              <button className="close-modal-btn" onClick={() => setIsMembersModalOpen(false)}>
-                <X size={18} />
-              </button>
-            </div>
-            
-            <div className="modal-body" style={{ padding: '20px 0 0 0' }}>
-              {loadingMembers ? (
-                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '30px 0', gap: '8px', color: 'var(--text-secondary)' }}>
-                  <Loader className="animate-spin" size={18} />
-                  <span>Loading members...</span>
-                </div>
-              ) : (
-                <>
-                  {/* Members list */}
-                  <div style={{ maxHeight: '250px', overflowY: 'auto', marginBottom: '24px', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem', textAlign: 'left' }}>
-                      <thead>
-                        <tr style={{ backgroundColor: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)' }}>
-                          <th style={{ padding: '12px 16px', color: 'var(--text-muted)', fontWeight: 600 }}>Member</th>
-                          <th style={{ padding: '12px 16px', color: 'var(--text-muted)', fontWeight: 600 }}>Role</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {membersList.map((m: any) => (
-                          <tr key={m.user_id} style={{ borderBottom: '1px solid var(--border-color)' }}>
-                            <td style={{ padding: '12px 16px' }}>
-                              <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{m.username || 'User'}</div>
-                              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{m.email}</div>
-                            </td>
-                            <td style={{ padding: '12px 16px' }}>
-                              <span style={{ fontSize: '0.75rem', textTransform: 'capitalize', backgroundColor: 'var(--bg-primary)', border: '1px solid var(--border-color)', padding: '2px 8px', borderRadius: '10px', color: 'var(--text-secondary)' }}>
-                                {m.role}
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+      {isMembersModalOpen && activeOrg && (() => {
+        const currentUserId = session?.user?.id;
+        const currentUserRole = membersList.find((mem: any) => mem.user_id === currentUserId)?.role;
+        const isWorkspaceOwner = currentUserRole === 'owner';
 
-                  {/* Invite section */}
-                  <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '20px' }}>
-                    <h3 style={{ fontSize: '0.9375rem', fontWeight: 700, marginBottom: '12px', color: 'var(--text-primary)' }}>Add Registered User to Workspace</h3>
-                    <form onSubmit={handleInviteFromDropdown} className="modal-form" style={{ display: 'flex', gap: '12px', alignItems: 'flex-end' }}>
-                      <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
-                        <label htmlFor="invite-select-user" style={{ fontSize: '0.75rem' }}>Select Registered User</label>
-                        <select
-                          id="invite-select-user"
-                          value={selectedInviteUser}
-                          onChange={(e) => setSelectedInviteUser(e.target.value)}
-                          required
-                          style={{
-                            width: '100%',
-                            padding: '10px 14px',
-                            borderRadius: 'var(--radius-md)',
-                            border: '1px solid var(--border-color)',
-                            backgroundColor: 'var(--bg-primary)',
-                            color: 'var(--text-primary)',
-                            outline: 'none',
-                            fontSize: '0.875rem'
-                          }}
-                        >
-                          <option value="">-- Choose User --</option>
-                          {inviteableUsers.map((u: any) => (
-                            <option key={u.id} value={u.email}>
-                              {u.username ? `${u.username} (${u.email})` : u.email}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <button
-                        type="submit"
-                        className="submit-btn"
-                        disabled={!selectedInviteUser || loadingMembers}
-                        style={{ height: '42px', padding: '0 20px', display: 'flex', alignItems: 'center', gap: '6px' }}
-                      >
-                        <Plus size={16} />
-                        <span>Add Member</span>
-                      </button>
-                    </form>
-                    {inviteableUsers.length === 0 && !loadingMembers && (
-                      <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '8px', margin: '8px 0 0 0' }}>
-                        No other registered users are available to add. Invitees must sign up on Docify first.
-                      </p>
-                    )}
+        return (
+          <div className="modal-overlay" onClick={() => setIsMembersModalOpen(false)}>
+            <div className="modal-card" style={{ maxWidth: '600px' }} onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h2>Workspace Members: {activeOrg.name}</h2>
+                <button className="close-modal-btn" onClick={() => setIsMembersModalOpen(false)}>
+                  <X size={18} />
+                </button>
+              </div>
+              
+              <div className="modal-body" style={{ padding: '20px 0 0 0' }}>
+                {loadingMembers ? (
+                  <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '30px 0', gap: '8px', color: 'var(--text-secondary)' }}>
+                    <Loader className="animate-spin" size={18} />
+                    <span>Loading members...</span>
                   </div>
-                </>
-              )}
-            </div>
-            
-            <div className="form-actions" style={{ marginTop: '24px', justifyContent: 'flex-end' }}>
-              <button type="button" className="cancel-btn" onClick={() => setIsMembersModalOpen(false)}>Close</button>
+                ) : (
+                  <>
+                    {/* Members list */}
+                    <div style={{ maxHeight: '250px', overflowY: 'auto', marginBottom: '24px', border: '1px solid var(--border-color)', borderRadius: 'var(--radius-md)' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.875rem', textAlign: 'left' }}>
+                        <thead>
+                          <tr style={{ backgroundColor: 'var(--bg-secondary)', borderBottom: '1px solid var(--border-color)' }}>
+                            <th style={{ padding: '12px 16px', color: 'var(--text-muted)', fontWeight: 600 }}>Member</th>
+                            <th style={{ padding: '12px 16px', color: 'var(--text-muted)', fontWeight: 600 }}>Role</th>
+                            {isWorkspaceOwner && (
+                              <th style={{ padding: '12px 16px', color: 'var(--text-muted)', fontWeight: 600, textAlign: 'right' }}>Actions</th>
+                            )}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {membersList.map((m: any) => (
+                            <tr key={m.user_id} style={{ borderBottom: '1px solid var(--border-color)' }}>
+                              <td style={{ padding: '12px 16px' }}>
+                                <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{m.username || 'User'}</div>
+                                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{m.email}</div>
+                              </td>
+                              <td style={{ padding: '12px 16px' }}>
+                                <span style={{ fontSize: '0.75rem', textTransform: 'capitalize', backgroundColor: 'var(--bg-primary)', border: '1px solid var(--border-color)', padding: '2px 8px', borderRadius: '10px', color: 'var(--text-secondary)' }}>
+                                  {m.role}
+                                </span>
+                              </td>
+                              {isWorkspaceOwner && (
+                                <td style={{ padding: '12px 16px', textAlign: 'right' }}>
+                                  {m.user_id !== currentUserId ? (
+                                    <button
+                                      onClick={() => handleRemoveMember(m.user_id, m.email)}
+                                      className="remove-member-btn"
+                                    >
+                                      Remove
+                                    </button>
+                                  ) : (
+                                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>(You)</span>
+                                  )}
+                                </td>
+                              )}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Invite section - ONLY visible to workspace owners */}
+                    {isWorkspaceOwner && (
+                      <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '20px' }}>
+                        <h3 style={{ fontSize: '0.9375rem', fontWeight: 700, marginBottom: '12px', color: 'var(--text-primary)' }}>Add Registered User to Workspace</h3>
+                        <form onSubmit={handleInviteFromDropdown} className="modal-form" style={{ display: 'flex', gap: '12px', alignItems: 'flex-end' }}>
+                          <div className="form-group" style={{ flex: 1, marginBottom: 0 }}>
+                            <label htmlFor="invite-select-user" style={{ fontSize: '0.75rem' }}>Select Registered User</label>
+                            <select
+                              id="invite-select-user"
+                              value={selectedInviteUser}
+                              onChange={(e) => setSelectedInviteUser(e.target.value)}
+                              required
+                              style={{
+                                width: '100%',
+                                padding: '10px 14px',
+                                borderRadius: 'var(--radius-md)',
+                                border: '1px solid var(--border-color)',
+                                backgroundColor: 'var(--bg-primary)',
+                                color: 'var(--text-primary)',
+                                outline: 'none',
+                                fontSize: '0.875rem'
+                              }}
+                            >
+                              <option value="">-- Choose User --</option>
+                              {inviteableUsers.map((u: any) => (
+                                <option key={u.id} value={u.email}>
+                                  {u.username ? `${u.username} (${u.email})` : u.email}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <button
+                            type="submit"
+                            className="submit-btn"
+                            disabled={!selectedInviteUser || loadingMembers}
+                            style={{ height: '42px', padding: '0 20px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                          >
+                            <Plus size={16} />
+                            <span>Add Member</span>
+                          </button>
+                        </form>
+                        {inviteableUsers.length === 0 && !loadingMembers && (
+                          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '8px', margin: '8px 0 0 0' }}>
+                            No other registered users are available to add. Invitees must sign up on Docify first.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+              
+              <div className="form-actions" style={{ marginTop: '24px', justifyContent: 'flex-end' }}>
+                <button type="button" className="cancel-btn" onClick={() => setIsMembersModalOpen(false)}>Close</button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Create Section Modal */}
       {isCreateSectionOpen && (
