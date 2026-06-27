@@ -341,7 +341,12 @@ function App() {
         return;
       }
       const msg = err.message || '';
-      if (msg.includes('get_organization_members') || msg.includes('get_registered_users')) {
+      if (
+        msg.includes('get_organization_members') || 
+        msg.includes('get_registered_users') || 
+        msg.includes('created_at') || 
+        msg.includes('column')
+      ) {
         showAlertDialog(
           'Supabase SQL Setup Required',
           `Please run the following SQL script in your Supabase Dashboard SQL Editor to support listing users and members:
