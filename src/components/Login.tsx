@@ -8,6 +8,7 @@ interface LoginProps {
 
 export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
   const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -32,6 +33,9 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
           onLoginSuccess(data.session);
         }
       } else if (mode === 'signup') {
+        if (!username.trim()) {
+          throw new Error('Username is required.');
+        }
         if (password !== confirmPassword) {
           throw new Error('Passwords do not match.');
         }
@@ -44,6 +48,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
           options: {
             data: {
               first_login: true,
+              username: username.trim(),
             },
           },
         });
@@ -186,6 +191,22 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
               >
                 <ArrowLeft size={14} /> Back to Sign In
               </button>
+            )}
+
+            {mode === 'signup' && (
+              <div className="form-group-login">
+                <label htmlFor="login-username">Username / Display Name</label>
+                <input
+                  id="login-username"
+                  type="text"
+                  placeholder="e.g. John Doe"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  required
+                  disabled={loading}
+                  style={{ width: '100%' }}
+                />
+              </div>
             )}
 
             <div className="form-group-login">

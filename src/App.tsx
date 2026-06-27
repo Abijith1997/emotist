@@ -241,8 +241,14 @@ function App() {
         setActiveOrg(currentOrg);
         localStorage.setItem(`active_org_${userId}`, currentOrg.id);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error fetching organizations or migrating legacy data:', err);
+      if (err.status === 401 || err.message?.includes('JWT') || err.message?.includes('token') || err.message?.includes('401')) {
+        console.warn('Invalid or expired auth session. Signing out...');
+        supabase.auth.signOut().then(() => {
+          setSession(null);
+        });
+      }
     }
   };
 
@@ -317,11 +323,23 @@ function App() {
       setMembersList(members || []);
 
       // Filter out users who are already members of this organization
-      const memberEmails = new Set((members || []).map((m: any) => m.email.toLowerCase()));
-      const filtered = (users || []).filter((u: any) => !memberEmails.has(u.email.toLowerCase()));
+      const memberEmails = new Set(
+        (members || [])
+          .map((m: any) => m.email ? m.email.toLowerCase() : '')
+          .filter(Boolean)
+      );
+      const filtered = (users || [])
+        .filter((u: any) => u.email && !memberEmails.has(u.email.toLowerCase()));
       setInviteableUsers(filtered);
     } catch (err: any) {
       console.error('Failed to fetch members or users:', err);
+      if (err.status === 401 || err.message?.includes('JWT') || err.message?.includes('token') || err.message?.includes('401')) {
+        console.warn('Invalid or expired auth session. Signing out...');
+        supabase.auth.signOut().then(() => {
+          setSession(null);
+        });
+        return;
+      }
       const msg = err.message || '';
       if (msg.includes('get_organization_members') || msg.includes('get_registered_users')) {
         showAlertDialog(
