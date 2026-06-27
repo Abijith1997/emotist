@@ -11,7 +11,7 @@ import { staticDocsConfig, staticAllPages } from './docs-config';
 import { supabase } from './supabaseClient';
 import { Login } from './components/Login';
 import { OrgSelectorPage } from './components/OrgSelectorPage';
-import { Loader, Camera, AlertCircle, Database, X, BookOpen, Plus } from 'lucide-react';
+import { Loader, Camera, AlertCircle, Database, X, BookOpen, Plus, MessageSquare, Cloud, Network, CheckSquare } from 'lucide-react';
 import { Tasks } from './components/Tasks';
 
 type Tab = 'docs' | 'forum' | 'cloud' | 'architecture' | 'tasks';
@@ -1203,6 +1203,13 @@ $$;`,
       {activeTab === 'docs' ? (
         /* Main docs app grid */
         <div className="main-wrapper">
+          {/* Mobile sidebar overlay backdrop */}
+          {mobileMenuOpen && (
+            <div 
+              className="sidebar-overlay-backdrop"
+              onClick={() => setMobileMenuOpen(false)}
+            />
+          )}
           {/* Left sidebar nav */}
           <Sidebar
             activePageId={activePageId}
@@ -2170,6 +2177,52 @@ on public.doc_pages for all using (true) with check (true);`}
             </div>
           </div>
         </div>
+      )}
+      {/* Mobile Bottom Navigation Bar */}
+      {session && (
+        <nav className="mobile-bottom-nav">
+          <button
+            className={`mobile-bottom-tab ${activeTab === 'docs' ? 'active' : ''}`}
+            onClick={() => setActiveTab('docs')}
+          >
+            <BookOpen size={20} />
+            <span>Docs</span>
+          </button>
+          <button
+            className={`mobile-bottom-tab ${activeTab === 'forum' ? 'active' : ''}`}
+            onClick={() => setActiveTab('forum')}
+          >
+            <MessageSquare size={20} />
+            <span>Forum</span>
+          </button>
+          {activeOrg?.settings?.enabled_tabs?.includes('cloud') !== false && (
+            <button
+              className={`mobile-bottom-tab ${activeTab === 'cloud' ? 'active' : ''}`}
+              onClick={() => setActiveTab('cloud')}
+            >
+              <Cloud size={20} />
+              <span>Cloud</span>
+            </button>
+          )}
+          {activeOrg?.settings?.enabled_tabs?.includes('architecture') !== false && (
+            <button
+              className={`mobile-bottom-tab ${activeTab === 'architecture' ? 'active' : ''}`}
+              onClick={() => setActiveTab('architecture')}
+            >
+              <Network size={20} />
+              <span>Arch</span>
+            </button>
+          )}
+          {activeOrg?.settings?.enabled_tabs?.includes('tasks') !== false && (
+            <button
+              className={`mobile-bottom-tab ${activeTab === 'tasks' ? 'active' : ''}`}
+              onClick={() => setActiveTab('tasks')}
+            >
+              <CheckSquare size={20} />
+              <span>Tasks</span>
+            </button>
+          )}
+        </nav>
       )}
     </div>
   );
