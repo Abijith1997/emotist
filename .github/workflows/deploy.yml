@@ -35,6 +35,7 @@ jobs:
           version: latest
 
       - name: Run Database Migrations
+        if: ${{ secrets.DATABASE_URL != '' }}
         run: supabase db push --db-url "${{ secrets.DATABASE_URL }}"
 
       - name: Setup Node
