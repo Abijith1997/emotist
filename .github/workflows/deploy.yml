@@ -18,6 +18,8 @@ concurrency:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
     environment:
       name: github-pages
@@ -35,8 +37,8 @@ jobs:
           version: latest
 
       - name: Run Database Migrations
-        if: ${{ secrets.DATABASE_URL != '' }}
-        run: supabase db push --db-url "${{ secrets.DATABASE_URL }}"
+        if: ${{ env.DATABASE_URL != '' }}
+        run: supabase db push --db-url "${{ env.DATABASE_URL }}"
 
       - name: Setup Node
         uses: actions/setup-node@v4
