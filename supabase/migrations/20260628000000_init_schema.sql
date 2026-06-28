@@ -114,6 +114,20 @@ alter table public.task_comments enable row level security;
 -- 3. RLS SECURITY POLICIES
 -- ----------------------------------------------------
 
+-- Drop existing policies to prevent "already exists" errors during migration runs
+drop policy if exists "Allow select for workspace members" on public.organizations;
+drop policy if exists "Allow insert for authenticated users" on public.organizations;
+drop policy if exists "Allow update/delete for workspace owners" on public.organizations;
+drop policy if exists "Allow select for members of same organization" on public.organization_members;
+drop policy if exists "Allow insert of own owner membership during creation" on public.organization_members;
+drop policy if exists "Allow all actions for workspace members on doc_categories" on public.doc_categories;
+drop policy if exists "Allow all actions for workspace members on doc_pages" on public.doc_pages;
+drop policy if exists "Allow all actions for workspace members on forum_threads" on public.forum_threads;
+drop policy if exists "Allow all actions for workspace members on forum_comments" on public.forum_comments;
+drop policy if exists "Allow all actions for workspace members on tasks" on public.tasks;
+drop policy if exists "Allow all actions for workspace members on task_subtasks" on public.task_subtasks;
+drop policy if exists "Allow all actions for workspace members on task_comments" on public.task_comments;
+
 -- Organizations (Select members-only, write owners-only)
 create policy "Allow select for workspace members"
 on public.organizations for select
