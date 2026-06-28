@@ -46,6 +46,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
           email: email.trim(),
           password,
           options: {
+            emailRedirectTo: window.location.origin + window.location.pathname,
             data: {
               first_login: true,
               username: username.trim(),
