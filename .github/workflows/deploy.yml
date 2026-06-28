@@ -29,6 +29,14 @@ jobs:
         with:
           submodules: false
 
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Run Database Migrations
+        run: supabase db push --db-url "${{ secrets.DATABASE_URL }}"
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
